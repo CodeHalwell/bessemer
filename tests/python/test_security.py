@@ -75,6 +75,14 @@ def build_app():
     async def read_keys(key: Annotated[str, Depends(header_key)]):
         return {"key": key}
 
+    @app.get("/keyq")
+    async def read_keyq(key: Annotated[str, Depends(query_key)]):
+        return {"key": key}
+
+    @app.get("/keyc")
+    async def read_keyc(key: Annotated[str, Depends(cookie_key)]):
+        return {"key": key}
+
     @app.post("/token")
     async def token(form: Annotated[OAuth2PasswordRequestForm, Depends()]):
         return {
@@ -105,6 +113,14 @@ class SecurityDependencyTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(HTTPException) as caught:
                 asyncio.run(scheme(request))
             self.assertEqual(caught.exception.status_code, 400)
+
+    def test_a_repeated_query_key_is_rejected_even_when_optional(self):
+        request = Request({"query_string": b"key=a&key=b", "headers": []})
+        for auto_error in (True, False):
+            with self.subTest(auto_error=auto_error):
+                with self.assertRaises(HTTPException) as caught:
+                    asyncio.run(APIKeyQuery(name="key", auto_error=auto_error)(request))
+                self.assertEqual(caught.exception.status_code, 400)
 
     @classmethod
     def setUpClass(cls):
@@ -159,6 +175,13 @@ class SecurityDependencyTests(unittest.TestCase):
             response = self.client.get(path, headers={"authorization": "bearer tok"})
             self.assertEqual(response.json(), {"token": "tok"})
             self.assertChallenge(self.client.get(path), "Bearer")
+
+    def test_repeated_api_keys_over_http(self):
+        self.assertEqual(self.client.get("/keyq?key=a&key=b").status_code, 400)
+        self.assertEqual(self.client.get("/keyq?key=a").json(), {"key": "a"})
+        # Cookies are never refused: the first cookie with a name wins.
+        response = self.client.get("/keyc", headers={"cookie": "session=a; session=b"})
+        self.assertEqual(response.json(), {"key": "a"})
 
     def test_api_keys(self):
         response = self.client.get(

@@ -153,6 +153,66 @@ class RedisRateLimitTests(unittest.TestCase):
             time.sleep(0.6)
             self.assertEqual(client.get("/").status_code, 200)
 
+    def scripts_run(self):
+        stats = command(self.port, ("INFO", "commandstats"))
+        return sum(
+            int(line.split("calls=")[1].split(",")[0])
+            for line in stats.splitlines()
+            if line.startswith(("cmdstat_evalsha:", "cmdstat_eval:"))
+        )
+
+    def test_a_limited_client_costs_the_store_about_one_command_a_second(self):
+        with TestClient(app(requests=1, window=10)) as client:
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(client.get("/").status_code, 429)
+            before = self.scripts_run()
+            started = time.monotonic()
+            sent = 0
+            # Well inside the 10 s wait, whatever the machine's speed.
+            while sent < 300 and time.monotonic() - started < 5:
+                limited = client.get("/")
+                self.assertEqual(limited.status_code, 429)
+                self.assertIn(int(limited.headers["retry-after"]), range(1, 11))
+                sent += 1
+            elapsed = time.monotonic() - started
+            # The store is asked again about once a second, not once a
+            # request, however many requests the limited client sends.
+            asked = self.scripts_run() - before
+            self.assertGreater(sent, 3 * (int(elapsed) + 2))
+            self.assertLessEqual(asked, int(elapsed) + 2, (asked, sent, elapsed))
+            # Once the wait is over the store decides again.
+            deadline = time.monotonic() + 30
+            while client.get("/").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.assertGreater(self.scripts_run(), before)
+
+    def test_a_client_the_store_forgets_is_admitted_again_within_a_second(self):
+        # A flush, an operator deleting the key, eviction or a failover to an
+        # empty replica: the store's answer changes before the wait it gave.
+        with TestClient(app(requests=2, window=60)) as client:
+            statuses = [client.get("/").status_code for _ in range(4)]
+            self.assertEqual(statuses, [200, 200, 429, 429])
+            limited = client.get("/")
+            self.assertEqual(limited.status_code, 429)
+            self.assertTrue(50 <= int(limited.headers["retry-after"]) <= 60)
+            command(self.port, ("SELECT", "2"), ("FLUSHDB",))
+            deadline = time.monotonic() + 10
+            while (response := client.get("/")).status_code != 200:
+                self.assertEqual(response.status_code, 429)
+                # A locally answered 429 still carries the store's wait.
+                self.assertTrue(50 <= int(response.headers["retry-after"]) <= 60)
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(client.get("/").status_code, 429)
+            # Deleting the client's key unblocks it the same way.
+            command(self.port, ("SELECT", "2"), ("DEL", "bessemer:rate:127.0.0.1"))
+            deadline = time.monotonic() + 10
+            while client.get("/").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+
     def test_the_script_is_reloaded_after_a_flush(self):
         with TestClient(app()) as client:
             self.assertEqual(client.get("/").status_code, 200)

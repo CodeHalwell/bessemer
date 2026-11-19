@@ -1,0 +1,17 @@
+# LeakSanitizer suppressions for the free-threaded legs only, added to
+# lsan-suppressions.txt by the workflow. The standard legs do not use them.
+#
+# Free-threaded CPython allocates its objects with its bundled mimalloc, whose
+# arenas LeakSanitizer does not scan, and PYTHONMALLOC=malloc does not exist
+# there. A block from malloc that only a Python object refers to therefore
+# looks unreachable. The ones the Rust tests meet are the locks of the
+# buffered standard streams, made while the interpreter starts
+# (io.BufferedReader.__init__ calling PyThread_allocate_lock): three 32-byte
+# blocks, with no Bessemer or PyO3 frame in their stacks. Where libpython is
+# built without frame pointers the stack ends at PyThread_allocate_lock, which
+# Bessemer never calls.
+#
+# Add an entry here only for a frame inside CPython that a report has shown,
+# never for a Bessemer or PyO3 frame.
+leak:_buffered_init
+leak:PyThread_allocate_lock

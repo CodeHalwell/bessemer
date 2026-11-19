@@ -10,7 +10,13 @@ test suite.
 single-worker services. It compares JSON types and values across Python/Rust,
 uses a large-response service as the byte-size oracle for a 256-byte service,
 and checks Host allowlists, cookies, scalar request headers, and native response
-headers. Malformed JSON properties compare typed bodies and raw `Request.json`
+headers. The cookie property generates one to three `Cookie` header lines of
+well-formed and malformed pairs (spaces, quotes, commas, semicolons, backslashes,
+empty or non-token names, pairs without `=`) and compares both a typed
+`Cookie()` parameter and the whole of `request.cookies` with an independent
+model of `src/cookies.rs`: a pair that is not RFC 6265 cookie-octets is left
+out, the first well-formed cookie with a name wins, and the request is never
+refused for its cookies. Malformed JSON properties compare typed bodies and raw `Request.json`
 for overwritten invalid values, unpaired surrogates, invalid UTF-8, numeric
 bounds, depth, and syntax errors. Generated requests use only loopback and
 synthetic fixture data.
@@ -28,7 +34,9 @@ work/security-fuzz/bin/python tests/security/fuzz_transport.py \
 Each selected property receives the requested example count. The output records
 attempts and distinct inputs separately, seeds, installed distribution and interpreter versions,
 candidate and installed-package hashes, shrunk failures, and fixture server
-logs. The supplied wheel must match every installed package file. A failed
+logs. Every file the supplied wheel installs under `bessemer/` (sources,
+`py.typed` and the native extension, whatever its suffix) must match the installed
+package byte for byte. A failed
 property leaves a failed report; a partial run is never marked passed.
 The output directory must be new or empty, preventing stale evidence from a
 previous run from being mistaken for a new result.

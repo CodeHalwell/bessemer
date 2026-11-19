@@ -8,6 +8,7 @@ import io
 import json
 import math
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
@@ -171,8 +172,8 @@ class _SpooledPart(io.RawIOBase):
 
     def close(self) -> None:
         if not self.closed:
+            # Lets go of this part's share of the request's spool file.
             self._source.close()
-            self._source.__dict__.pop("_bessemer_spool_lease", None)
         super().close()
 
 
@@ -817,40 +818,210 @@ def _multipart_part(data: bytes, start: int, end: int) -> tuple[bytes, bytes]:
     return data[start:header_end], data[header_end + 4 : end]
 
 
-def _multipart_form(content_type: str, body: bytes) -> FormData:
-    """Parse a buffered ``multipart/form-data`` body into ``FormData``."""
-    from email.message import Message
+# The grammar of a part's headers is the native parser's (src/forms.rs `part`,
+# `parse_disposition`, `parameter_value` and `decode_extended`), so that
+# `request.form()` and `Form()`/`File()` parameters always see the same parts:
+#
+# - The header block is UTF-8, split on CRLF into at most 16 lines. Each line is
+#   `name:value`; the name is printable ASCII without `:` (no surrounding
+#   space), the value holds no CR, LF or NUL and is trimmed of Unicode white
+#   space as Rust's `str::trim` does.
+# - At most one Content-Disposition and one Content-Type; Content-Disposition
+#   is required and other headers are kept but not interpreted.
+# - Content-Disposition is `form-data` (any ASCII case), then `;`-separated
+#   parameters read strictly left to right. A parameter's key is everything up
+#   to the next `=` (trimmed, ASCII case-folded): `a; b=c` is one parameter
+#   whose key is `a; b`. Its value is a quoted string (a backslash takes the
+#   next character literally) or a token up to the next `;` (trimmed, not
+#   empty). Only white space may follow a quoted string before the next `;`.
+#   An unterminated quote, an empty token, a missing `=` or a trailing `;` is
+#   malformed.
+# - `name`, `filename` and `filename*` may each appear once; other keys are
+#   ignored. `name` must be present and not empty. `filename*` wins over
+#   `filename` and is `UTF-8'lang'percent-encoded`, strictly: only the UTF-8
+#   charset, `%` followed by two hex digits, a UTF-8 result and no control
+#   characters.
+# - A part is a file exactly when it has a filename (even an empty one); its
+#   content type is the Content-Type value as sent, or None.
+#
+# Every scan below moves forward through the value and never revisits text,
+# so time is linear in the header length, which the multipart split bounds at
+# 8 KiB per part (`_MAX_PART_HEADER_BYTES`).
 
+_INVALID_PART_HEADERS = "Invalid multipart part headers"
+# Rust's `char::is_whitespace` (Unicode White_Space), which `str::trim` uses.
+# Python's `str.strip()` would also strip U+001C to U+001F; Rust does not.
+_WHITESPACE = "".join(
+    map(
+        chr,
+        (0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680)
+        + tuple(range(0x2000, 0x200B))
+        + (0x2028, 0x2029, 0x202F, 0x205F, 0x3000),
+    )
+)
+_WHITESPACE_RUN = re.compile(f"[{_WHITESPACE}]*")
+# Printable ASCII except ":", as natively.
+_HEADER_NAME = re.compile(r"[!-9;-~]+")
+# The plain run of a quoted string, up to its next quote or backslash.
+_QUOTED_RUN = re.compile(r'[^"\\]*')
+_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+# Unicode category Cc, as Rust's `char::is_control`.
+_CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _is_ascii_word(text: str, word: str) -> bool:
+    """``text`` equals lowercase ``word`` ignoring ASCII case only."""
+    return text.isascii() and text.lower() == word
+
+
+def _header_parameters(value: str) -> tuple[str, str | None]:
+    """The field name and optional filename of a ``Content-Disposition``.
+
+    One left-to-right pass with the native grammar (see above); anything it
+    does not accept is a 400 with the native detail.
+    """
+    length = len(value)
+    position = _WHITESPACE_RUN.match(value).end()
+    kind_end = value.find(";", position)
+    if kind_end == -1:
+        kind_end = length
+    if not _is_ascii_word(value[position:kind_end].strip(_WHITESPACE), "form-data"):
+        raise HTTPException(400, _INVALID_PART_HEADERS)
+    position = kind_end
+    parameters: dict[str, str] = {}
+    while position < length:
+        # Each parameter starts at a ";"; anything else after a value is junk.
+        if value[position] != ";":
+            raise HTTPException(400, _INVALID_PART_HEADERS)
+        position = _WHITESPACE_RUN.match(value, position + 1).end()
+        equals = value.find("=", position)
+        if equals == -1:
+            # Also a trailing ";", which the native parser refuses.
+            raise HTTPException(400, _INVALID_PART_HEADERS)
+        key = value[position:equals].strip(_WHITESPACE)
+        position = _WHITESPACE_RUN.match(value, equals + 1).end()
+        if position < length and value[position] == '"':
+            pieces = []
+            position += 1
+            while True:
+                run_end = _QUOTED_RUN.match(value, position).end()
+                pieces.append(value[position:run_end])
+                if run_end == length:
+                    raise HTTPException(400, _INVALID_PART_HEADERS)  # Unterminated.
+                if value[run_end] == '"':
+                    position = run_end + 1
+                    break
+                # A backslash: the next character, whatever it is, literally.
+                if run_end + 1 == length:
+                    raise HTTPException(400, _INVALID_PART_HEADERS)
+                pieces.append(value[run_end + 1])
+                position = run_end + 2
+            parameter = "".join(pieces)
+            position = _WHITESPACE_RUN.match(value, position).end()
+        else:
+            token_end = value.find(";", position)
+            if token_end == -1:
+                token_end = length
+            parameter = value[position:token_end].strip(_WHITESPACE)
+            if not parameter:
+                raise HTTPException(400, _INVALID_PART_HEADERS)
+            position = token_end
+        if key.isascii():
+            key = key.lower()
+        if key in ("name", "filename", "filename*"):
+            if key in parameters:
+                raise HTTPException(400, _INVALID_PART_HEADERS)
+            parameters[key] = parameter
+    name = parameters.get("name")
+    if not name:
+        raise HTTPException(400, _INVALID_PART_HEADERS)
+    extended = parameters.get("filename*")
+    if extended is not None:
+        return name, _extended_filename(extended)
+    return name, parameters.get("filename")
+
+
+def _extended_filename(value: str) -> str:
+    """``UTF-8'lang'percent-encoded`` (RFC 5987), exactly as natively.
+
+    Only the UTF-8 charset; every ``%`` is followed by two hex digits; the
+    result is UTF-8 and holds no control character (NUL, CR, LF, ...), which a
+    quoted ``filename`` cannot carry either. Anything else is a 400.
+    """
+    pieces = value.split("'", 2)
+    if len(pieces) != 3 or not _is_ascii_word(pieces[0], "utf-8"):
+        raise HTTPException(400, _INVALID_PART_HEADERS)
+    encoded = pieces[2].encode("utf-8").split(b"%")
+    decoded = bytearray(encoded[0])
+    for piece in encoded[1:]:
+        if len(piece) < 2 or piece[0] not in _HEX_DIGITS or piece[1] not in _HEX_DIGITS:
+            raise HTTPException(400, _INVALID_PART_HEADERS)
+        decoded.append(int(piece[:2], 16))
+        decoded += piece[2:]
+    try:
+        filename = decoded.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise HTTPException(400, _INVALID_PART_HEADERS) from error
+    if _CONTROL_CHARACTER.search(filename):
+        raise HTTPException(400, _INVALID_PART_HEADERS)
+    return filename
+
+
+def _part_headers(block: bytes) -> tuple[dict[str, str], str, str | None, str | None]:
+    """A part's headers, field name, filename and content type, as natively."""
+    try:
+        text = block.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise HTTPException(400, _INVALID_PART_HEADERS) from error
+    lines: list[tuple[str, str]] = []
+    if text:
+        for line in text.split("\r\n"):
+            if len(lines) == _MAX_PART_HEADERS:
+                raise HTTPException(400, "Too many multipart part headers")
+            name, colon, value = line.partition(":")
+            if (
+                not colon
+                or not _HEADER_NAME.fullmatch(name)
+                or "\r" in value
+                or "\n" in value
+                or "\0" in value
+            ):
+                raise HTTPException(400, _INVALID_PART_HEADERS)
+            lines.append((name.lower(), value.strip(_WHITESPACE)))
+    disposition = None
+    content_type = None
+    for name, value in lines:
+        if name == "content-disposition":
+            if disposition is not None:
+                raise HTTPException(400, _INVALID_PART_HEADERS)
+            disposition = value
+        elif name == "content-type":
+            if content_type is not None:
+                raise HTTPException(400, _INVALID_PART_HEADERS)
+            content_type = value
+    if disposition is None:
+        raise HTTPException(400, "A multipart part has no Content-Disposition")
+    field, filename = _header_parameters(disposition)
+    # The native parser hands Python its header pairs; a repeated header
+    # keeps its last value in the mapping, as there.
+    return dict(lines), field, filename, content_type
+
+
+def _multipart_form(content_type: str, body: bytes) -> FormData:
+    """Parse a buffered ``multipart/form-data`` body into ``FormData``.
+
+    Part headers follow the native parser's grammar exactly, so this and
+    ``Form()``/``File()`` parameters agree on every part. Text parts are
+    always decoded as UTF-8 whatever charset a part declares: a client-named
+    codec is never looked up.
+    """
     fields: list[tuple[str, Any]] = []
     for block, payload in _multipart_parts(content_type, body):
-        lines = block.split(b"\r\n") if block else []
-        if len(lines) > _MAX_PART_HEADERS:
-            raise HTTPException(400, "Too many multipart part headers")
-        part = Message()
-        for line in lines:
-            name, colon, value = line.partition(b":")
-            if not colon or not name.strip():
-                raise HTTPException(400, "Invalid multipart part headers")
-            try:
-                part[name.strip().decode("ascii")] = value.strip().decode("utf-8")
-            except UnicodeDecodeError as error:
-                raise HTTPException(400, "Invalid multipart part headers") from error
-        name = part.get_param("name", header="content-disposition")
-        if not isinstance(name, str):
-            continue
-        filename = part.get_filename()
+        headers, name, filename, part_type = _part_headers(block)
         if filename is None:
-            charset = part.get_content_charset() or "utf-8"
-            try:
-                text = payload.decode(charset, errors="replace")
-            except LookupError:
-                text = payload.decode("utf-8", errors="replace")
-            fields.append((name, text))
+            fields.append((name, payload.decode("utf-8", errors="replace")))
         else:
-            headers = {key.lower(): str(value) for key, value in part.items()}
-            fields.append(
-                (name, UploadFile(filename, part.get_content_type(), headers, payload))
-            )
+            fields.append((name, UploadFile(filename, part_type, headers, payload)))
     return FormData(fields)
 
 

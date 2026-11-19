@@ -20,6 +20,7 @@
 //! field's exact type returns `None` so the caller keeps Pydantic's behaviour,
 //! including its serialization warnings.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use pyo3::{
@@ -100,6 +101,16 @@ pub struct ModelBody {
     #[cfg(not(Py_GIL_DISABLED))]
     encode_ordered_dict: bool,
     all_fields: Py<PySet>,
+    /// Whether an exact instance's `__dict__` can be installed with
+    /// `PyObject_GenericSetDict`. On CPython 3.13 that call leaves a class's
+    /// inline values in place (attribute reads would miss the new dict and
+    /// later writes corrupt it), so such a class goes through the `__dict__`
+    /// descriptor, as pydantic-core does. Pydantic models never have inline
+    /// values there: `BaseModel`'s `__slots__` rule them out.
+    direct_dict: bool,
+    /// Body keys to the first field reading each, for plans wider than
+    /// [`KEY_INDEX_FIELDS`]; narrower plans scan their fields.
+    key_index: Option<HashMap<Box<[u8]>, usize>>,
     /// Where the class keeps `__pydantic_extra__`, `__pydantic_private__` and
     /// `__pydantic_fields_set__`, when all three are plain slots.
     slots: Option<ModelSlots>,
@@ -377,6 +388,14 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                     .iter()
                     .all(|field| field.node.accepts_live_dict_iteration());
             let slots = ModelSlots::find(py, cls.bind(py));
+            let direct_dict = direct_dict(cls.bind(py));
+            let key_index = (fields.len() > KEY_INDEX_FIELDS).then(|| {
+                let mut index = HashMap::with_capacity(fields.len());
+                for (position, field) in fields.iter().enumerate() {
+                    index.entry(field.key.as_bytes().into()).or_insert(position);
+                }
+                index
+            });
             Node::Model(Arc::new(ModelBody {
                 cls,
                 forbid_extra,
@@ -385,11 +404,48 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 #[cfg(not(Py_GIL_DISABLED))]
                 encode_ordered_dict,
                 all_fields,
+                direct_dict,
+                key_index,
                 slots,
             }))
         }
         _ => return Err(PyValueError::new_err("unknown model plan node")),
     })
+}
+
+/// Plans with more fields than this find a body key's field through a hash
+/// map built once here; narrower ones compare keys in field order, which is
+/// cheaper at this size. Either way the first field with the key wins.
+const KEY_INDEX_FIELDS: usize = 16;
+
+impl ModelBody {
+    /// The first field that reads body key `key`, if any.
+    #[inline]
+    fn field_index(&self, key: &[u8]) -> Option<usize> {
+        match &self.key_index {
+            Some(index) => index.get(key).copied(),
+            None => self
+                .fields
+                .iter()
+                .position(|field| field.key.as_bytes() == key),
+        }
+    }
+}
+
+/// See [`ModelBody::direct_dict`].
+#[cfg(all(Py_3_13, not(Py_3_14)))]
+fn direct_dict(cls: &Bound<'_, PyType>) -> bool {
+    // `Py_TPFLAGS_INLINE_VALUES` in CPython 3.13's object.h.
+    const INLINE_VALUES: std::ffi::c_ulong = 1 << 2;
+    // SAFETY: `cls` is a live type object.
+    unsafe { ffi::PyType_GetFlags(cls.as_type_ptr()) & INLINE_VALUES == 0 }
+}
+
+/// See [`ModelBody::direct_dict`]: other versions install the dict correctly
+/// whatever the layout.
+#[cfg(not(all(Py_3_13, not(Py_3_14))))]
+fn direct_dict(_: &Bound<'_, PyType>) -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +522,7 @@ fn model<'py>(
     if body.forbid_extra
         && members
             .keys()
-            .any(|key| !body.fields.iter().any(|field| field.key == *key))
+            .any(|key| body.field_index(key.as_bytes()).is_none())
     {
         return Ok(None);
     }
@@ -522,17 +578,20 @@ fn assemble<'py>(
     }
     let cls = body.cls.bind(py);
     let instance = instantiate(py, cls)?;
+    // `tp_new` is the class's own and may hand back an object of another
+    // type, whose layout this plan knows nothing about: it gets the generic
+    // sets, through its type's descriptors.
+    let exact = instance.is_exact_instance(cls);
     // The same attributes, in the same order, that pydantic-core's model
     // validator sets on an instance it builds.
-    set_dict(&instance, values.as_any())?;
+    if exact && body.direct_dict {
+        set_dict(&instance, values.as_any())?;
+    } else {
+        set_attribute(&instance, pyo3::intern!(py, "__dict__"), values.as_any())?;
+    }
     let none = py.None().into_bound(py);
-    // The members' offsets are this class's. `tp_new` is the class's own and
-    // may hand back an object of another type, which gets the generic set.
-    match body
-        .slots
-        .as_ref()
-        .filter(|_| instance.is_exact_instance(cls))
-    {
+    // The members' offsets are this class's.
+    match body.slots.as_ref().filter(|_| exact) {
         Some(slots) => {
             slots.extra.set(&instance, &none)?;
             slots.private.set(&instance, &none)?;
@@ -589,7 +648,8 @@ fn set_attribute(
 
 /// Install `values` as the instance's `__dict__`, the way the `__dict__`
 /// slot descriptor does (the same as a `__dict__` setattr, without the
-/// attribute-name lookup).
+/// attribute-name lookup). Only for an exact instance of a class whose
+/// [`ModelBody::direct_dict`] is set.
 fn set_dict(instance: &Bound<'_, PyAny>, values: &Bound<'_, PyAny>) -> PyResult<()> {
     let status = unsafe {
         ffi::PyObject_GenericSetDict(instance.as_ptr(), values.as_ptr(), std::ptr::null_mut())
@@ -977,7 +1037,7 @@ impl Parser<'_, Scan> {
                         return Err(ParseError);
                     }
                     self.position += 1;
-                    body.fields.iter().position(|field| field.key == *key)
+                    body.field_index(key.as_bytes())
                 };
                 match found {
                     // A repeated key keeps the last value only after every
@@ -1636,11 +1696,11 @@ impl Encoder<'_, '_> {
         unsafe {
             #[cfg(Py_GIL_DISABLED)]
             let object = self.locked(object, |this| {
-                if ffi::PyDict_Size(object) as usize
-                    > this
-                        .out
-                        .len()
-                        .saturating_add(this.max_bytes.saturating_sub(this.out.len()))
+                // The same bound as below, before anything is copied.
+                if (ffi::PyDict_Size(object) as usize)
+                    .saturating_mul(5)
+                    .saturating_add(1)
+                    > this.max_bytes.saturating_sub(this.out.len())
                 {
                     return Err(Bail);
                 }
@@ -1810,7 +1870,7 @@ impl Encoder<'_, '_> {
                 }
                 if body.forbid_extra {
                     let text = self.utf8(key)?;
-                    if !body.fields.iter().any(|field| field.key.as_bytes() == text) {
+                    if body.field_index(text).is_none() {
                         return Err(Bail);
                     }
                 }
@@ -2856,6 +2916,174 @@ spec = ('model', Record, False,
                 instances += usize::from(expected.is_some());
             }
             assert!(instances > 100, "{instances}");
+        });
+    }
+
+    /// CPython 3.13's `PyObject_GenericSetDict` leaves a class's inline
+    /// values in place, so a plan for such a class (a plain class through a
+    /// private plan, or another type from `__new__`) installs the dict
+    /// through the `__dict__` descriptor. Reads, later writes and the dict
+    /// itself then agree on every version.
+    #[test]
+    fn instances_with_inline_values_get_a_consistent_dict() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Plain:
+    pass
+class Slotted:
+    __slots__ = ('__dict__', '__pydantic_fields_set__', '__pydantic_extra__',
+                 '__pydantic_private__')
+class Elsewhere(Slotted):
+    def __new__(cls, *args):
+        return Plain()
+def spec(cls):
+    return ('model', cls, False, (('a', 'a', 'a', ('int',), False, None),))
+def check(instance):
+    assert instance.a == 7, instance.a
+    instance.b = 2
+    assert instance.b == 2
+    names = list(instance.__dict__)
+    assert len(instance.__dict__) == len(names), names
+    assert instance.__dict__['a'] == 7 and instance.__dict__['b'] == 2, names
+    return sorted(names)
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let spec = locals.get_item("spec").unwrap().unwrap();
+            let check = locals.get_item("check").unwrap().unwrap();
+            for (name, extra) in [("Plain", true), ("Slotted", false), ("Elsewhere", true)] {
+                let cls = locals.get_item(name).unwrap().unwrap();
+                let plan = ModelPlan::from_spec(&spec.call1((&cls,)).unwrap()).unwrap();
+                #[cfg(all(Py_3_13, not(Py_3_14)))]
+                assert_eq!(plan.body().unwrap().direct_dict, name != "Plain", "{name}");
+                #[cfg(not(all(Py_3_13, not(Py_3_14))))]
+                assert!(plan.body().unwrap().direct_dict, "{name}");
+                let value = super::super::parse_value(br#"{"a": 7}"#).unwrap();
+                for instance in [
+                    parse_model(py, &plan, br#"{"a": 7}"#).unwrap().unwrap(),
+                    build_model(py, &plan, &value).unwrap(),
+                ] {
+                    let names: Vec<String> = check.call1((&instance,)).unwrap().extract().unwrap();
+                    // A class without slots keeps the Pydantic attributes in
+                    // its dict too.
+                    let mut expected = vec!["a", "b"];
+                    if extra {
+                        expected.extend([
+                            "__pydantic_extra__",
+                            "__pydantic_fields_set__",
+                            "__pydantic_private__",
+                        ]);
+                    }
+                    expected.sort();
+                    assert_eq!(names, expected, "{name}");
+                }
+            }
+        });
+    }
+
+    /// A free-threaded build snapshots a string-keyed dict before writing
+    /// it; one whose shortest encoding cannot fit is refused first, by the
+    /// same bound the GIL build applies, and is never copied.
+    #[cfg(Py_GIL_DISABLED)]
+    #[test]
+    fn str_maps_that_cannot_fit_are_refused_before_they_are_copied() {
+        Python::attach(|py| {
+            let map = py
+                .eval(c"{str(i): 0 for i in range(1000)}", None, None)
+                .unwrap();
+            for (max_bytes, fits) in [(2000, false), (5000, false), (1 << 20, true)] {
+                let (mut out, mut entries, mut held) = (Vec::new(), Vec::new(), Vec::new());
+                let mut encoder = Encoder {
+                    py,
+                    out: &mut out,
+                    entries: &mut entries,
+                    held: &mut held,
+                    max_bytes,
+                };
+                // SAFETY: `map` is a live exact dict held for the call.
+                let result = unsafe { encoder.str_map(map.as_ptr(), &Node::Int, 0) };
+                assert_eq!(result.is_ok(), fits, "{max_bytes}");
+                assert_eq!(held.len(), usize::from(fits), "{max_bytes}");
+                for object in held {
+                    // SAFETY: each is a strong reference the encoder took.
+                    unsafe { ffi::Py_DECREF(object) };
+                }
+            }
+        });
+    }
+
+    /// Plans wider than [`KEY_INDEX_FIELDS`] find a key's field through the
+    /// index, with the same result as the field scan narrower plans use: the
+    /// first field with the key, in any key order, with unknown, repeated and
+    /// (under `extra="forbid"`) refused keys.
+    #[test]
+    fn wide_plans_find_fields_by_index_as_narrow_plans_do_by_scan() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                cr#"class Record: pass
+def spec(width, forbid):
+    # Fields 1 and 3 share a key; the first of them reads it.
+    keys = ['k%d' % (1 if index == 3 else index) for index in range(width)]
+    return ('model', Record, forbid,
+            tuple(('f%d' % index, key, 'f%d' % index, ('int',), True, -index)
+                  for index, key in enumerate(keys)))
+"#,
+                Some(&locals),
+                None,
+            )
+            .unwrap();
+            let spec = locals.get_item("spec").unwrap().unwrap();
+            for width in [KEY_INDEX_FIELDS, KEY_INDEX_FIELDS + 1, 40] {
+                for forbid in [false, true] {
+                    let plan = ModelPlan::from_spec(&spec.call1((width, forbid)).unwrap()).unwrap();
+                    // The same plan made to scan its fields, as the reference.
+                    let mut scanning =
+                        ModelPlan::from_spec(&spec.call1((width, forbid)).unwrap()).unwrap();
+                    match &mut Arc::get_mut(&mut scanning).unwrap().root {
+                        Node::Model(body) => Arc::get_mut(body).unwrap().key_index = None,
+                        _ => unreachable!(),
+                    }
+                    let body = plan.body().unwrap();
+                    assert_eq!(body.key_index.is_some(), width > KEY_INDEX_FIELDS);
+                    assert_eq!(body.field_index(b"k1"), Some(1));
+                    assert_eq!(body.field_index(b"k3"), None);
+                    assert_eq!(body.field_index(b"other"), None);
+                    let keys: Vec<String> = (0..width)
+                        .filter(|&index| index != 3)
+                        .map(|index| format!("k{index}"))
+                        .collect();
+                    let mut orders = vec![keys.clone(), keys.iter().rev().cloned().collect()];
+                    let mut unknown = keys.clone();
+                    unknown.insert(width / 2, "other".into());
+                    orders.push(unknown.iter().rev().cloned().collect());
+                    orders.push(unknown);
+                    let mut repeated = keys.clone();
+                    repeated.push("k1".into());
+                    orders.push(repeated);
+                    orders.push(keys[..width / 3].iter().rev().cloned().collect());
+                    for order in orders {
+                        let names: Vec<&str> = order.iter().map(String::as_str).collect();
+                        let text = numbered(&names);
+                        let parsed = built(parse_model(py, &plan, text.as_bytes()).unwrap());
+                        let expected = built(parse_model(py, &scanning, text.as_bytes()).unwrap());
+                        assert_eq!(parsed, expected, "{text}");
+                        let refused = (forbid && names.contains(&"other"))
+                            || names.iter().filter(|&&key| key == "k1").count() > 1;
+                        assert_eq!(parsed.is_none(), refused, "{text}");
+                        // The value path's forbid check uses the index too.
+                        let value = super::super::parse_value(text.as_bytes()).unwrap();
+                        assert_eq!(
+                            build_model(py, &plan, &value).is_none(),
+                            forbid && names.contains(&"other"),
+                            "{text}"
+                        );
+                    }
+                }
+            }
         });
     }
 }

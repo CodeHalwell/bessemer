@@ -246,11 +246,18 @@ struct ServerState {
     max_response_size: usize,
     request_bytes: budget::ByteBudget,
     response_bytes: budget::ByteBudget,
+    /// The shared places of HTTP/2 streams waiting for more of their bodies,
+    /// which hold no admission slot: `max_connections` of them, beyond each
+    /// connection's own (see `budget::BodyWaits`).
+    body_waits: budget::BodyWaits,
     request_timeout: Duration,
     /// Request deadlines, swept by one task instead of a timer per request.
     deadlines: deadline::Deadlines,
     /// Accept `permessage-deflate` when a WebSocket client offers it.
     websocket_compression: bool,
+    /// WebSocket sessions, at most `max_connections` however they arrive:
+    /// one HTTP/2 connection can carry many.
+    websocket_sessions: Arc<Semaphore>,
     /// Disk spooling for multipart bodies over `max_body_size`, when enabled.
     uploads: Option<uploads::Settings>,
 }
@@ -275,6 +282,9 @@ fn field<'py>(item: &Bound<'py, PyAny>, name: &str) -> PyResult<Bound<'py, PyAny
 }
 
 fn routes_from_python(routes: &Bound<'_, PyAny>, max_connections: usize) -> PyResult<Vec<Route>> {
+    // Static mounts and `FileResponse` bodies hold at most this many
+    // distinct files open at once.
+    static_files::limit_open_files(max_connections);
     let mut output = Vec::new();
     let mut seen = HashSet::new();
     let mut route_ids = HashSet::new();
@@ -448,13 +458,8 @@ fn routes_from_python(routes: &Bound<'_, PyAny>, max_connections: usize) -> PyRe
                 let html: bool = field(&item, "html")?.extract()?;
                 let cache_control: Option<String> = field(&item, "cache_control")?.extract()?;
                 Some(Arc::new(
-                    static_files::StaticDir::new(
-                        &directory,
-                        html,
-                        cache_control.as_deref(),
-                        max_connections,
-                    )
-                    .map_err(PyValueError::new_err)?,
+                    static_files::StaticDir::new(&directory, html, cache_control.as_deref())
+                        .map_err(PyValueError::new_err)?,
                 ))
             } else {
                 None
@@ -1087,7 +1092,7 @@ async fn handle(
         }) else {
             return static_files::redirect_to_directory(request.uri());
         };
-        return Box::pin(files.serve(&relative, request.uri(), request.headers())).await;
+        return Box::pin(files.serve(&relative, request.uri(), request.headers(), head)).await;
     }
     if route.websocket {
         return Box::pin(handle_websocket(
@@ -1106,7 +1111,8 @@ async fn handle(
     // slot taken is for work, not for waiting: a request gives it up while it
     // waits for its body and takes one again when the body is in (see
     // `budget::buffer_body` and `uploads::spool`), so a client that declares a
-    // body and does not send it holds none.
+    // body and does not send it holds none. On HTTP/2 it holds a place to
+    // wait instead (`budget::BodyWaits`), or is refused.
     let Some(permit) = admit(state).await else {
         return capacity_response("Server is at capacity", true);
     };
@@ -1179,14 +1185,18 @@ async fn handle(
         // is read, so a client that asked first (`Expect: 100-continue`) is
         // not invited to send what would be rejected. Only a request that
         // frames a body can declare one; the others skip the header lookup.
-        if spool_boundary.is_none()
-            && !http_body::Body::is_end_stream(&body)
-            && declared_length().is_some_and(|length| length > state.max_body_size)
-        {
-            let mut response = error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "Request body exceeds the configured limit",
-            );
+        // A spooled upload is held to `max_upload_size` the same way, before
+        // a spool slot or any disk is taken.
+        let refused = match (&spool_boundary, &state.uploads) {
+            (Some(_), Some(settings)) => declared_length()
+                .is_some_and(|length| length as u64 > settings.max_upload_size)
+                .then_some("Request body exceeds the configured upload limit"),
+            _ => (!http_body::Body::is_end_stream(&body)
+                && declared_length().is_some_and(|length| length > state.max_body_size))
+            .then_some("Request body exceeds the configured limit"),
+        };
+        if let Some(detail) = refused {
+            let mut response = error(StatusCode::PAYLOAD_TOO_LARGE, detail);
             response
                 .headers_mut()
                 .insert(header::CONNECTION, HeaderValue::from_static("close"));
@@ -1216,7 +1226,7 @@ async fn handle(
                     Err(uploads::Error::Full) => {
                         // Capacity may be held by readers Python has let go
                         // of and not yet collected.
-                        uploads::reclaim_dropped_readers(settings);
+                        uploads::reclaim_dropped_readers();
                         return capacity_response("Upload capacity is full", true);
                     }
                     Err(spool_error) => {
@@ -1252,6 +1262,8 @@ async fn handle(
                     body,
                     state.max_body_size,
                     &state.request_bytes,
+                    &state.body_waits,
+                    request.extensions(),
                     &mut held.admission,
                 )
                 .await
@@ -1261,6 +1273,11 @@ async fn handle(
             Ok(value) => value,
             Err(budget::ReadError::Full) => {
                 return capacity_response("Request byte capacity is full", true);
+            }
+            // Refused as admission refuses. Only an HTTP/2 stream is: only
+            // it is answered (and reset, its body unread), not the connection.
+            Err(budget::ReadError::Waiting) => {
+                return capacity_response("Server is at capacity", true);
             }
             Err(read_error) => {
                 let mut response = match read_error {
@@ -1562,14 +1579,14 @@ async fn handle(
         }
         if route.needs_principal {
             // Verified natively by the JWT control; absent on excluded paths.
-            let claims = request_info
-                .as_ref()
-                .and_then(|info| info.claims.as_deref())
-                .cloned();
-            arguments.insert(
-                "__bessemer_principal__".into(),
-                claims.unwrap_or(Value::Null),
-            );
+            // Shared, not copied: Python builds its own objects from them.
+            let claims = request_info.as_ref().and_then(|info| info.claims.clone());
+            match claims {
+                Some(claims) => {
+                    arguments.insert("__bessemer_principal__".into(), Argument::Shared(claims))
+                }
+                None => arguments.insert("__bessemer_principal__".into(), Value::Null),
+            }
         }
         // `needs_request` routes never take the raw path, so they keep the body.
         let raw_body = raw_body.then(|| std::mem::take(&mut body));
@@ -1657,15 +1674,22 @@ async fn handle(
         if !response.extensions().is_empty() {
             if let Some(start) = response.extensions_mut().remove::<streaming::StreamStart>()
                 && let Some(stream) = start.take()
-                && !head
                 && !matches!(response.status().as_u16(), 204 | 205 | 304)
             {
-                // Each chunk must arrive within the route timeout of the previous one.
-                *response.body_mut() = Body::new(streaming::start(
-                    stream,
-                    state.response_bytes.clone(),
-                    timeout,
-                ));
+                *response.body_mut() = if head {
+                    // Closed unread: a HEAD states no length the GET has not.
+                    drop(stream);
+                    Body::new(http_body_util::StreamBody::new(
+                        http_body_util::BodyStream::new(Body::empty()),
+                    ))
+                } else {
+                    // Each chunk must arrive within the route timeout of the previous one.
+                    Body::new(streaming::start(
+                        stream,
+                        state.response_bytes.clone(),
+                        timeout,
+                    ))
+                };
             }
             if let Some(pending) = response
                 .extensions_mut()
@@ -1705,7 +1729,12 @@ async fn handle(
             .headers_mut()
             .insert(header::CONNECTION, HeaderValue::from_static("close"));
     }
-    if head {
+    // A stream's empty body keeps its unknown length (see above).
+    if head
+        && http_body::Body::size_hint(response.body())
+            .exact()
+            .is_some()
+    {
         *response.body_mut() = Body::empty();
     }
     response
@@ -1718,11 +1747,28 @@ async fn handle_websocket(
     route: &Route,
     path: router::PathParams,
     info: RequestInfo,
-    request: Request,
+    mut request: Request,
 ) -> Response {
     let Ok(path_params) = path else {
         return error(StatusCode::BAD_REQUEST, "Invalid path parameters");
     };
+    // An HTTP/1.1 session already holds a connection, but one HTTP/2
+    // connection carries up to 100: the worker admits `max_connections`
+    // sessions in all. The permit joins the connection context, which the
+    // session keeps until its handler and the handler's cleanup are done.
+    let Ok(session) = state.websocket_sessions.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many WebSocket sessions",
+        );
+    };
+    if let Some(context) = request
+        .extensions_mut()
+        .get_mut::<websocket::ConnectionContext>()
+    {
+        let stream = context._stream.take();
+        context._stream = Some(Arc::new((stream, session)));
+    }
     let headers = request.headers();
     let secure = info.secure;
     let info = Some(info);
@@ -2144,9 +2190,11 @@ fn serve(
         max_response_size,
         request_bytes: budget::ByteBudget::new(max_request_bytes_in_flight),
         response_bytes: budget::ByteBudget::new(max_response_bytes_in_flight),
+        body_waits: budget::BodyWaits::new(max_connections),
         request_timeout,
         deadlines: deadline::Deadlines::default(),
         websocket_compression,
+        websocket_sessions: Arc::new(Semaphore::new(max_connections)),
         uploads,
     });
     let tracer = controls.tracer();
@@ -2628,10 +2676,16 @@ mod tests {
         for output_capacity in [64, 1] {
             let request_bytes = budget::ByteBudget::new(8);
             let response_bytes = budget::ByteBudget::new(output_capacity);
-            let (body, input_permit) =
-                budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                    .await
-                    .unwrap();
+            let (body, input_permit) = budget::buffer_body(
+                Body::from("12345678"),
+                8,
+                &request_bytes,
+                &budget::BodyWaits::new(0),
+                &axum::http::Extensions::new(),
+                &mut None,
+            )
+            .await
+            .unwrap();
             drop(body);
             let capacity = Arc::new(Semaphore::new(1));
             let permit = capacity.clone().try_acquire_owned().unwrap();
@@ -2651,9 +2705,11 @@ mod tests {
                     max_response_size: 64,
                     request_bytes: request_bytes.clone(),
                     response_bytes: response_bytes.clone(),
+                    body_waits: budget::BodyWaits::new(1),
                     request_timeout: Duration::from_secs(1),
                     deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
+                    websocket_sessions: Arc::new(Semaphore::new(1)),
                     uploads: None,
                 };
                 dispatch(
@@ -2789,10 +2845,16 @@ mod tests {
     #[tokio::test]
     async fn expired_requests_do_not_submit_python_work_and_release_input() {
         let request_bytes = budget::ByteBudget::new(8);
-        let (_, input_permit) =
-            budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                .await
-                .unwrap();
+        let (_, input_permit) = budget::buffer_body(
+            Body::from("12345678"),
+            8,
+            &request_bytes,
+            &budget::BodyWaits::new(0),
+            &axum::http::Extensions::new(),
+            &mut None,
+        )
+        .await
+        .unwrap();
         let capacity = Arc::new(Semaphore::new(1));
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2816,9 +2878,11 @@ mod tests {
                 max_response_size: 64,
                 request_bytes: request_bytes.clone(),
                 response_bytes: budget::ByteBudget::new(64),
+                body_waits: budget::BodyWaits::new(1),
                 request_timeout: Duration::from_secs(1),
                 deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
+                websocket_sessions: Arc::new(Semaphore::new(1)),
                 uploads: None,
             };
             let result = dispatch(
@@ -2841,10 +2905,16 @@ mod tests {
     async fn native_rejections_preserve_expiry_precedence_and_release_input() {
         for (closed, expired) in [(false, true), (true, true), (true, false)] {
             let request_bytes = budget::ByteBudget::new(8);
-            let (_, input_permit) =
-                budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                    .await
-                    .unwrap();
+            let (_, input_permit) = budget::buffer_body(
+                Body::from("12345678"),
+                8,
+                &request_bytes,
+                &budget::BodyWaits::new(0),
+                &axum::http::Extensions::new(),
+                &mut None,
+            )
+            .await
+            .unwrap();
             let capacity = Arc::new(Semaphore::new(1));
             let admission = Admission {
                 _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2871,9 +2941,11 @@ mod tests {
                     max_response_size: 64,
                     request_bytes: request_bytes.clone(),
                     response_bytes: budget::ByteBudget::new(64),
+                    body_waits: budget::BodyWaits::new(1),
                     request_timeout: Duration::from_secs(1),
                     deadlines: deadline::Deadlines::default(),
                     websocket_compression: false,
+                    websocket_sessions: Arc::new(Semaphore::new(1)),
                     uploads: None,
                 };
                 let deadline = if expired {
@@ -2909,10 +2981,16 @@ mod tests {
     async fn input_and_admission_survive_client_cancellation_until_actual_completion() {
         let request_bytes = budget::ByteBudget::new(8);
         let response_bytes = budget::ByteBudget::new(64);
-        let (_, input_permit) =
-            budget::buffer_body(Body::from("12345678"), 8, &request_bytes, &mut None)
-                .await
-                .unwrap();
+        let (_, input_permit) = budget::buffer_body(
+            Body::from("12345678"),
+            8,
+            &request_bytes,
+            &budget::BodyWaits::new(0),
+            &axum::http::Extensions::new(),
+            &mut None,
+        )
+        .await
+        .unwrap();
         let capacity = Arc::new(Semaphore::new(1));
         let admission = Admission {
             _request: capacity.clone().try_acquire_owned().unwrap(),
@@ -2936,9 +3014,11 @@ mod tests {
                 max_response_size: 64,
                 request_bytes: request_bytes.clone(),
                 response_bytes: response_bytes.clone(),
+                body_waits: budget::BodyWaits::new(1),
                 request_timeout: Duration::from_secs(1),
                 deadlines: deadline::Deadlines::default(),
                 websocket_compression: false,
+                websocket_sessions: Arc::new(Semaphore::new(1)),
                 uploads: None,
             };
             dispatch(

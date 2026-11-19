@@ -189,6 +189,8 @@ fn build(settings: &Settings, files: &Files) -> Result<Arc<rustls::ServerConfig>
     let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(versions)
         .map_err(|error| format!("TLS configuration failed: {error}"))?;
+    let authenticates_clients =
+        matches!((&settings.client_ca, &files.client_ca), (Some(_), Some(_)));
     let builder = match (&settings.client_ca, &files.client_ca) {
         (Some(path), Some(bundle)) => {
             let mut roots = rustls::RootCertStore::empty();
@@ -243,6 +245,17 @@ fn build(settings: &Settings, files: &Files) -> Result<Arc<rustls::ServerConfig>
     let mut config = builder
         .with_single_cert_with_ocsp(certificates, key, ocsp)
         .map_err(|error| format!("tls_cert and tls_key do not form a usable pair: {error}"))?;
+    if authenticates_clients {
+        // A resumed session restores the client chain without verifying it
+        // again, so an expired (or newly out-of-date-CRL) certificate would
+        // keep working for as long as the session kept being resumed. With
+        // no session cache, no TLS 1.3 tickets and no TLS 1.2 tickets (the
+        // default ticketer produces none), every connection does a full
+        // handshake and verifies the certificate now.
+        config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        config.send_tls13_tickets = 0;
+        debug_assert!(!config.ticketer.enabled());
+    }
     config.alpn_protocols = if settings.http2 {
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]
     } else {
@@ -634,6 +647,87 @@ mod tests {
         .unwrap();
         let error = server_config(&configured).unwrap_err();
         assert!(error.contains("tls_client_crl"), "{error}");
+    }
+
+    /// How the server saw each of two connections from one client config,
+    /// which keeps whatever resumption state the first one left it.
+    async fn two_handshakes(
+        server: Arc<rustls::ServerConfig>,
+        client: Arc<rustls::ClientConfig>,
+    ) -> Vec<Option<rustls::HandshakeKind>> {
+        let mut kinds = Vec::new();
+        for _ in 0..2 {
+            let acceptor = tokio_rustls::TlsAcceptor::from(server.clone());
+            let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+            let accepted = tokio::spawn(async move {
+                let mut stream = acceptor.accept(server_end).await.ok()?;
+                stream.write_all(b"ok").await.ok()?;
+                stream.shutdown().await.ok()?;
+                stream.get_ref().1.handshake_kind()
+            });
+            let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+            let mut stream = tokio_rustls::TlsConnector::from(client.clone())
+                .connect(name, client_end)
+                .await
+                .unwrap();
+            // Reading to the end takes in the TLS 1.3 tickets sent after the
+            // handshake.
+            let mut sink = Vec::new();
+            let _ = stream.read_to_end(&mut sink).await;
+            kinds.push(accepted.await.unwrap());
+        }
+        kinds
+    }
+
+    #[tokio::test]
+    async fn mutual_tls_connections_are_never_resumed() {
+        use rustls::HandshakeKind::{Full, Resumed};
+        let (authority, chain, client_key) = client_identity();
+        let (directory, cert, key, ca) = certificate_files("resumption");
+        let ca_file = directory.join("client-ca.pem");
+        std::fs::write(&ca_file, &authority).unwrap();
+        for version in [&rustls::version::TLS13, &rustls::version::TLS12] {
+            let client = |identity: bool| {
+                let mut roots = rustls::RootCertStore::empty();
+                roots
+                    .add(CertificateDer::from_pem_slice(ca.as_bytes()).unwrap())
+                    .unwrap();
+                let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_protocol_versions(&[version])
+                .unwrap()
+                .with_root_certificates(roots);
+                Arc::new(if identity {
+                    builder
+                        .with_client_auth_cert(chain.clone(), client_key.clone_key())
+                        .unwrap()
+                } else {
+                    builder.with_no_client_auth()
+                })
+            };
+            // Without client authentication, resumption is left on.
+            let plain = server_config(&settings(&cert, &key, "1.2", false)).unwrap();
+            assert_eq!(
+                two_handshakes(plain, client(false)).await,
+                [Some(Full), Some(Resumed)],
+                "{version:?}"
+            );
+            // With it, every connection verifies the certificate afresh.
+            for required in [true, false] {
+                let mut configured = settings(&cert, &key, "1.2", false);
+                configured.client_ca = Some(ca_file.to_str().unwrap().to_owned());
+                configured.client_required = required;
+                let mutual = server_config(&configured).unwrap();
+                assert_eq!(mutual.send_tls13_tickets, 0);
+                assert!(!mutual.ticketer.enabled());
+                assert_eq!(
+                    two_handshakes(mutual, client(true)).await,
+                    [Some(Full), Some(Full)],
+                    "{version:?} required={required}"
+                );
+            }
+        }
     }
 
     /// Verifies normally and records the OCSP response the server stapled.

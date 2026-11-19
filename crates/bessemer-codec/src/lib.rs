@@ -188,7 +188,10 @@ fn with_encoder<R>(
             _py: std::marker::PhantomData,
             max_bytes,
         };
-        // The caller owns `value` and the encoder runs no Python code. With
+        // The caller owns `value` and the encoder runs no Python code: it
+        // calls only C-API functions that cannot reach Python on the exact
+        // types it accepts, and refuses a string whose UTF-8 conversion could
+        // consult the codec error registry (`utf8_is_infallible`). With
         // the GIL held, nothing it visits through borrowed references can be
         // mutated or freed while it runs. On free-threaded Python a value is
         // read under its container's critical section or held by a snapshot
@@ -223,6 +226,134 @@ fn with_encoder<R>(
 }
 
 type Entry = *mut ffi::PyObject;
+
+/// Whether `PyUnicode_AsUTF8AndSize` on the exact `str` `object` can only
+/// succeed or fail to allocate, never reach the codec error registry: the
+/// string is Latin-1 (no surrogate code points), already has its UTF-8 form
+/// cached (CPython caches only a successful conversion), or holds no
+/// surrogate code point. Runs no Python code and sets no exception.
+///
+/// # Safety
+///
+/// `object` must be a live exact `str` and the interpreter attached.
+#[inline(always)]
+pub(crate) unsafe fn utf8_is_infallible(object: *mut ffi::PyObject) -> bool {
+    // SAFETY: the caller's. The tests the common cases need stay inline; the
+    // scan of an uncached wide string is out of line.
+    unsafe {
+        let kind = unicode_kind(object);
+        if kind == ffi::PyUnicode_1BYTE_KIND {
+            return true;
+        }
+        // A wider kind is never ASCII, so the object has the
+        // `PyCompactUnicodeObject` header (compact or legacy alike). The
+        // cache pointer is published atomically on free-threaded builds.
+        let cache = &raw mut (*object.cast::<ffi::PyCompactUnicodeObject>()).utf8;
+        !std::sync::atomic::AtomicPtr::from_ptr(cache)
+            .load(std::sync::atomic::Ordering::Acquire)
+            .is_null()
+            || wide_has_no_surrogate(object, kind)
+    }
+}
+
+/// `PyUnicode_KIND`, as one masked load where the layout is known. PyO3's
+/// accessor for CPython 3.12 and 3.13 extracts the bit field bit by bit;
+/// there `state` is `interned:2, kind:3, ...` from the low bit up (checked
+/// against `PyUnicode_KIND` by a test). 3.14 exports the accessor.
+///
+/// # Safety
+///
+/// `object` must be a live `str`.
+#[inline(always)]
+unsafe fn unicode_kind(object: *mut ffi::PyObject) -> std::ffi::c_uint {
+    #[cfg(all(not(Py_3_14), target_endian = "little"))]
+    // SAFETY: the caller's; `state` is the 32-bit field described above.
+    unsafe {
+        ((*object.cast::<ffi::PyASCIIObject>()).state >> 2) & 0b111
+    }
+    #[cfg(not(all(not(Py_3_14), target_endian = "little")))]
+    // SAFETY: the caller's.
+    unsafe {
+        ffi::PyUnicode_KIND(object)
+    }
+}
+
+/// The text of a compact ASCII `str` (every exact `str` that is ASCII), which
+/// is also its UTF-8, read in place where the layout is known: `state` bits
+/// 5 and 6 are `compact` and `ascii` on CPython 3.12 and 3.13, and the
+/// characters follow the `PyASCIIObject` header (checked against
+/// `PyUnicode_IS_COMPACT_ASCII` and `PyUnicode_AsUTF8AndSize` by a test).
+/// `None` means the caller converts it.
+///
+/// # Safety
+///
+/// `object` must be a live `str`; the slice lives as long as it does.
+#[inline(always)]
+unsafe fn compact_ascii<'s>(object: *mut ffi::PyObject) -> Option<&'s [u8]> {
+    #[cfg(all(not(Py_3_14), target_endian = "little"))]
+    // SAFETY: the caller's. A compact ASCII string's `length` characters
+    // and terminator are stored right after its header, and never change.
+    unsafe {
+        const COMPACT_ASCII: u32 = 0b110_0000;
+        let header = object.cast::<ffi::PyASCIIObject>();
+        if (*header).state & COMPACT_ASCII == COMPACT_ASCII {
+            return Some(std::slice::from_raw_parts(
+                header.add(1).cast::<u8>(),
+                (*header).length as usize,
+            ));
+        }
+        None
+    }
+    #[cfg(not(all(not(Py_3_14), target_endian = "little")))]
+    {
+        let _ = object;
+        None
+    }
+}
+
+/// Whether a 2- or 4-byte `kind` string holds no surrogate code point.
+///
+/// # Safety
+///
+/// As for [`utf8_is_infallible`], and `kind` is the string's.
+#[inline(never)]
+unsafe fn wide_has_no_surrogate(object: *mut ffi::PyObject, kind: std::ffi::c_uint) -> bool {
+    unsafe {
+        let length = ffi::PyUnicode_GET_LENGTH(object) as usize;
+        let data = ffi::PyUnicode_DATA(object);
+        if kind == ffi::PyUnicode_2BYTE_KIND {
+            !has_surrogate_ucs2(std::slice::from_raw_parts(data.cast::<u16>(), length))
+        } else {
+            !has_surrogate_ucs4(std::slice::from_raw_parts(data.cast::<u32>(), length))
+        }
+    }
+}
+
+// Whether any code unit is in U+D800..=U+DFFF. Each fixed-size block is
+// tested without branches, in lanes of the unit's own width, which the
+// compiler vectorises; the scan stops at the first block with one.
+macro_rules! surrogate_scan {
+    ($name:ident, $unit:ty) => {
+        #[inline]
+        fn $name(units: &[$unit]) -> bool {
+            const BLOCK: usize = 32;
+            let hit = |unit: $unit| <$unit>::from(unit.wrapping_sub(0xD800) < 0x800);
+            let mut blocks = units.chunks_exact(BLOCK);
+            for block in &mut blocks {
+                let mut found: $unit = 0;
+                for &unit in block {
+                    found |= hit(unit);
+                }
+                if found != 0 {
+                    return true;
+                }
+            }
+            blocks.remainder().iter().any(|&unit| hit(unit) != 0)
+        }
+    };
+}
+surrogate_scan!(has_surrogate_ucs2, u16);
+surrogate_scan!(has_surrogate_ucs4, u32);
 
 struct Encoder<'a, 'py> {
     #[cfg(Py_GIL_DISABLED)]
@@ -355,6 +486,7 @@ impl Encoder<'_, '_> {
         self.check()
     }
 
+    #[inline(always)]
     unsafe fn utf8<'s>(&self, object: *mut ffi::PyObject) -> Result<&'s [u8], Bail> {
         unsafe {
             // Every character encodes to at least one byte, so a string that
@@ -363,10 +495,21 @@ impl Encoder<'_, '_> {
             if characters.saturating_add(2) > self.max_bytes.saturating_sub(self.out.len()) {
                 return Err(Bail);
             }
+            // Compact ASCII text is its own UTF-8, stored after the header.
+            if let Some(text) = compact_ascii(object) {
+                return Ok(text);
+            }
+            // A string with a lone surrogate makes the conversion consult the
+            // codec error registry, where an application may have replaced
+            // the "strict" handler with Python code that frees what the
+            // encoder is reading. Such a string is refused before that.
+            if !utf8_is_infallible(object) {
+                return Err(Bail);
+            }
             let mut size: ffi::Py_ssize_t = 0;
             let data = ffi::PyUnicode_AsUTF8AndSize(object, &mut size);
             if data.is_null() {
-                // Lone surrogates cannot be encoded as UTF-8.
+                // Only a failed allocation, which runs no Python code.
                 ffi::PyErr_Clear();
                 return Err(Bail);
             }
@@ -379,6 +522,7 @@ impl Encoder<'_, '_> {
         }
     }
 
+    #[inline(always)]
     unsafe fn string(&mut self, object: *mut ffi::PyObject) -> Result<(), Bail> {
         let bytes = unsafe { self.utf8(object)? };
         write_escaped(self.out, bytes, self.max_bytes)?;
@@ -1483,6 +1627,145 @@ mod tests {
                     peak <= limit + 6,
                     "wrote {peak} bytes for a {limit}-byte limit"
                 );
+            }
+        });
+    }
+
+    #[test]
+    fn strings_that_could_reach_the_codec_error_registry_are_refused_first() {
+        // An application can replace the "strict" error handler, which the
+        // UTF-8 conversion of a lone surrogate consults; Python code running
+        // there could free what the encoder is reading. The handler here
+        // records being reached for this test's strings and otherwise acts
+        // as "strict", so concurrent tests see no change.
+        Python::attach(|py| {
+            let scope = pyo3::types::PyDict::new(py);
+            py.run(
+                cr#"import codecs
+reached = []
+targets = ['\ud800', 'a\udfffb', 'é\ud83d', '\U0001f642\udc00', 'k\ud800']
+values = [
+    targets[0],
+    ['ok', targets[1], 'never'],
+    {'a': ['é', targets[2]]},
+    [{'x': 1}, targets[3]],
+    {targets[4]: 1},
+]
+def handler(error):
+    if any(error.object is target for target in targets):
+        reached.append(error.object)
+    raise error
+codecs.register_error('strict', handler)
+"#,
+                Some(&scope),
+                None,
+            )
+            .unwrap();
+            let values = scope.get_item("values").unwrap().unwrap();
+            let mut refused = Vec::new();
+            for value in values.try_iter().unwrap() {
+                refused.push(encode_plain(&value.unwrap(), usize::MAX, <[u8]>::to_vec).is_none());
+            }
+            py.run(
+                c"codecs.register_error('strict', codecs.strict_errors)",
+                Some(&scope),
+                None,
+            )
+            .unwrap();
+            assert_eq!(refused, [true; 5]);
+            let reached = scope.get_item("reached").unwrap().unwrap();
+            assert_eq!(reached.len().unwrap(), 0, "the error handler ran");
+            // Wide strings without surrogates still encode, before and after
+            // their UTF-8 form is cached, to Python's own UTF-8 bytes.
+            let value = py
+                .eval(
+                    c"['\\u00e9\\u0100\\uffff', '\\U0001f642\\U0010ffff', '\\ud7ff\\ue000']",
+                    None,
+                    None,
+                )
+                .unwrap();
+            let expected =
+                "[\"\u{e9}\u{100}\u{ffff}\",\"\u{1f642}\u{10ffff}\",\"\u{d7ff}\u{e000}\"]";
+            for _ in 0..2 {
+                assert_eq!(
+                    encode_plain(&value, usize::MAX, <[u8]>::to_vec).as_deref(),
+                    Some(expected.as_bytes())
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn surrogate_scans_find_one_at_any_position_and_nothing_else() {
+        for length in [0, 1, 63, 64, 65, 200] {
+            let wide: Vec<u32> = (0..length)
+                .map(|index| 0xD7FF + 0x802 * (index % 2))
+                .collect();
+            let narrow: Vec<u16> = wide.iter().map(|&unit| unit as u16).collect();
+            assert!(!has_surrogate_ucs4(&wide) && !has_surrogate_ucs2(&narrow));
+            for position in 0..length as usize {
+                for unit in [0xD800, 0xDBFF, 0xDC00, 0xDFFF] {
+                    let mut wide = wide.clone();
+                    let mut narrow = narrow.clone();
+                    wide[position] = unit;
+                    narrow[position] = unit as u16;
+                    assert!(has_surrogate_ucs4(&wide), "{length} {position} {unit:x}");
+                    assert!(has_surrogate_ucs2(&narrow), "{length} {position} {unit:x}");
+                }
+            }
+        }
+        assert!(!has_surrogate_ucs4(&[0x10FFFF, 0x1D800, 0xE000, 0xD7FF]));
+    }
+
+    #[test]
+    fn the_string_kind_read_matches_the_interpreters() {
+        Python::attach(|py| {
+            let values = py
+                .eval(
+                    c"['', 'a', 'name', '\\u00e9', '\\u0100', '\\ud800', '\\U0001f642',
+                       ''.join(['x', 'y']), str(12345), '\\u00ff' * 3]",
+                    None,
+                    None,
+                )
+                .unwrap();
+            for value in values.try_iter().unwrap() {
+                let value = value.unwrap();
+                // SAFETY: each is a live exact str held by `values`.
+                let (ours, theirs) = unsafe {
+                    (
+                        unicode_kind(value.as_ptr()),
+                        ffi::PyUnicode_KIND(value.as_ptr()),
+                    )
+                };
+                assert_eq!(ours, theirs, "{value}");
+                // SAFETY: as above; a surrogate string fails the conversion,
+                // whose exception is cleared.
+                unsafe {
+                    let in_place = compact_ascii(value.as_ptr());
+                    let mut size = 0;
+                    let data = ffi::PyUnicode_AsUTF8AndSize(value.as_ptr(), &mut size);
+                    if data.is_null() {
+                        ffi::PyErr_Clear();
+                    }
+                    let converted = (!data.is_null())
+                        .then(|| std::slice::from_raw_parts(data.cast::<u8>(), size as usize));
+                    let ascii = converted.is_some_and(|text| text.is_ascii());
+                    if cfg!(all(not(Py_3_14), target_endian = "little")) {
+                        assert_eq!(in_place.is_some(), ascii, "{value}");
+                    } else {
+                        // No layout is assumed there: every string is
+                        // converted.
+                        assert!(in_place.is_none(), "{value}");
+                    }
+                    #[cfg(all(not(Py_3_14), target_endian = "little"))]
+                    assert_eq!(
+                        in_place.is_some(),
+                        ffi::PyUnicode_IS_COMPACT_ASCII(value.as_ptr()) != 0
+                    );
+                    if let Some(text) = in_place {
+                        assert_eq!(Some(text), converted, "{value}");
+                    }
+                }
             }
         });
     }

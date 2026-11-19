@@ -1,0 +1,73 @@
+{
+ "_comment": "Test-only Entra-shaped tokens signed by throwaway OpenSSL RSA keys whose private halves were never stored; segments are split so they are not mistaken for live credentials. Keys carry Entra's per-key issuer member: multi is the {tenantid} template, tenant1 a concrete tenant issuer, plain has none.",
+ "tenants": [
+  "11111111-1111-4111-8111-111111111111",
+  "22222222-2222-4222-8222-222222222222"
+ ],
+ "issuers": [
+  "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0",
+  "https://login.microsoftonline.com/22222222-2222-4222-8222-222222222222/v2.0"
+ ],
+ "jwks": {
+  "keys": [
+   {
+    "kty": "RSA",
+    "use": "sig",
+    "kid": "multi",
+    "n": "2RmdXQ0Tx2Rv5We8I8IWFl47IQcM6ICTINlGubiWaih2Ze-U6TkKKJXzVwPP1E23FsgZMBY33Yi7Su7v9BIQOgiQL69wghhusxUDvMHBoDkQwzrH73ZMCNi7F2nji9SfLVNuoOIoCqtQkpRUN1weOQDtosm8InMtpUZka6ENxwIVA44irrKks212iVAQ2oM1ebwJ-lXhikFpeZG8AKOq5l9CC3pX_eAtsXWdu_7mBQifqlhb3jBg_wuHMTFPvUIoPCNHxyWit-Xe3k6A0lkZWq6J6Ito7Ga1yl8eijkUDoQ4m7Plo8LcjwmvkXgn8i2EttMzbsk0Td2iUmfpsq00cw",
+    "e": "AQAB",
+    "issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"
+   },
+   {
+    "kty": "RSA",
+    "use": "sig",
+    "kid": "tenant1",
+    "n": "qTUrvsdE_CvPQyOjAcRFMGo9PlB_xTqcPTNn5flpDhopHQfrY-TOvmZSebEWYBuivbOML7Gf6C-qk72e6FxoIhcOcXdxnllwaRJZy6xFS_1gQstfAew-GEyxkDgRByhvXLeiIduWpqPalEd6vR80jUJqENViYJXLb6nI4qJ6w_L1LRIZ8S-D1CA6-8ZDO2j4dL6BHi3EwJmgcZo6hjN_c3wWLJuhnGp-7pcL97RKvyu--nnqgyl0AbdhpcQfoO-JZar0kAx17bdGFJSgSUZBW6zuEVckJjYuZAG5tmkooLWvGjfdaHzFrI4SMiLtFk1nf7N4wYps3VPZPz1XdVnM9w",
+    "e": "AQAB",
+    "issuer": "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0"
+   },
+   {
+    "kty": "RSA",
+    "use": "sig",
+    "kid": "plain",
+    "n": "ph6v9MqRQ_YoG55zemdXrOlbqDe2ea0mzkmGCkBy1V7KbEHq3ErVYEGl0868veaNlQaY2HqINLOGJa0TKOH0AbPYQH-RQh5kZfD0SE_lX5eUszHW3gXBC6cFv0RWuUcP6fgib0hsI59CuJPTklQlyRhYCZb2_X024dZDt1fftrH65n3LSHV33fB-3HgUt8YwN7OQC_fWDlI6k_SJkSk5UqglzJv9IlaINVi5SE3tNzpuVTUGiLuSgEApVMdJFmziHwF35OtjEZMgJ3BfjRvZO0VIsooyuB44DY-J_4WU-SwlSjIpwi376MpB3WG4wQsUCHahgt6lasjQcB6e9KjLjw",
+    "e": "AQAB"
+   }
+  ]
+ },
+ "template_tenant1": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCIsICJ0aWQiOiAiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIn0",
+  "lU6wJcDOTsScx5iscJ2OLkwB_IBB-OQr16SoaKikFC6Da0yR0JVykBSwmChoG1ihOJTIsJ_IT2L8iX0ajlVqJK43Cai2_4Glyj4TtutK_s7yublGJ-Ud75lnWn_CaGNrNZbeJksTeyNt605BFv3-HN7lWgDh2zC4rRfC45J8tHrgTKI7Zw0Hhy7PU6B7cw9RugZRug5SOVKFhLwt_L1BC7vJeAZ15ezklW2pG9sPz_KAq-GF6Qo2EJz9en0PEVGGy3Pdkeg2dGXW31pH7q4f_dmXaHpch9EONqegNUoBE5aUOQT3p6MdFVAgg1PYBf89ZMd8dn_DqnzGOByuSsKXlA"
+ ],
+ "template_tenant2": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8yMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCIsICJ0aWQiOiAiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIn0",
+  "PlsPc9tHzrcQACl7tQGuFNpv64FgLAaDTCv2X_dTcXMObJHQNgSTDlSRZnU4VeKSlVSftJ_uSgf9kTDTl4UAxVpkrlqbuWBVcCu7VmvJU8pJ0RAeJioUqZWR_r53iEDvDdLSUxkS5aMnn5irZBfb4bvUhUm7J5QWdCnxE_Y0vfai1L_bZsKIzV3VyQ6qHSm9n9fhDpenuMYvtCkGQXlG6wQz-ebYVUkPvZ_-ZAKgpp2kkw7TP7_rUR4DorZNKC0av468yauxqGTQdZE4JpXiDjZoXqbWxln7IEgR7n3x5mIll3m2ZMZSmtm0CJF-sXgA2ISW2l_BKsX3yk3CL_y8pQ"
+ ],
+ "template_mismatched_tid": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCIsICJ0aWQiOiAiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIn0",
+  "YxfQR2AhQ0-eTvIgDCF_cX4h7S1dw44xFdKFUr3MZprW446ai2hn8bjm30u3R4PRQebwcB3OUDLcMAChK_Mi-__z8funLWy5JwIWrGYLeaxj6bw06HODYpaweA9xlE5k9MTu7wOK8aodeqTAxKnClVCD1_976fVhfgjS2u-HCtHCDiJn3Zt4I-nMoOn17iPKTaUEQnbZvdDsdCewG-mWOkItmCekX6y4J0RJR-i0gIEKN2m3qd22L9ccaf128P3PVo7iPTFjd3Dn6ZnLsBIAh4p0oo13qtqBJ8ecae0O-r6RNEZUwAlz2tGi49dgehkWkjxHWQuZlygqpaVYQM7e_A"
+ ],
+ "template_without_tid": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCJ9",
+  "QMsGSyLPSBzmVIPzi8-Vhd0RRd-3GTBMSFv07AKYqrJvIrYv96zduEvURndHKZR3KqYLbbuBKNPohZ3qY0Auhnjn6vZCUNudcBGVomIKkaKFpE20ZhCq0ugVfrObcvZkFoPKgLiJqGJMbt3pQJF_Uiwo4btl1HzR-KibXNeZmJs5VsH7MCuf-onQ1QZi-MUS55ycdLufD7hNGdOLWkFhD3XUK5G2vzWTx6O6w1oA9pLXIDvh2peA0yLfDJJkzKWMH1qypDcDNP43-GfQsdfWPEPdFRkGOoTPoaOeAWc4H_QCT9QkDX6RyjPFgdAOWYbxnVfO1oqr8YCa9ejne8o4TA"
+ ],
+ "tenant1_key_for_tenant1": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogInRlbmFudDEiLCAidHlwIjogIkpXVCJ9",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8xMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCIsICJ0aWQiOiAiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIn0",
+  "OmOd15M2Mw8rXzvrove9AxdoK9To53iTmApk_Yev06Vj4V5C6Ljh5LqSDbkEUP2CcQKbInQPLuKMAd0dIQdZlrW3MDugZ4b397D73s34vikp0R3LLd9aEjY-4D05ZYFhbgH3XQK8LKEvBiP73Z0SHsOX7SgLLQmYYkYm-va1QQ4SuaCuwoNPxK40Aw2mKl8LFBw2ysBFxsQ3eYJWgQUwsMZV1GiFkTg9k5t79_mdIXfq0K9NCbvwKG4dBY0DtLaM5Zvp9tcsXy2APLIzYjKOPzf29EvvX1JsZD8mdGxh5dFlrBYpZXHLyrSb2FbL7ARVzcQ68M_pOfTBoevHyd0m5Q"
+ ],
+ "tenant1_key_for_tenant2": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogInRlbmFudDEiLCAidHlwIjogIkpXVCJ9",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8yMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCIsICJ0aWQiOiAiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIn0",
+  "Jxaa21bLh8W1kJRGRwdmd-rSMlqtUze9Lz2cChHlAQz_2fEHq8mXbvnQmfsiQ1pfFOvfCDzhqjorUc1Yhu7nS6KO6q7Ef2A_K_Gpk5IVSJMZ3DnpNxYi5GuGqRQtzZ2QhGaMqxwWUy0fXwBAOuI37vz6e0XtA20nfdvE8lPrD0-N1uk5M9Fm1IGUTuoIVHXqhMBB5n6WUB-Ed2U61ExAEw_q4F9ISZ9xOylSeX2U8pZq8MV570GR3q-cmuhIB1-5-aG8S_rPcMwlX2kenk_VJyngWleZ27vBF6AUDOHX9-GTn6LTf0wGsJFpF_vo4_7VVy1bZezDbI25ES0wscdyWQ"
+ ],
+ "plain_key_for_tenant2": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogInBsYWluIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8yMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIvdjIuMCIsICJhdWQiOiAiYXBpIiwgImV4cCI6IDQwMDAwMDAwMDAsICJzY3AiOiAiaXRlbXMucmVhZCIsICJ0aWQiOiAiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIn0",
+  "pLf0ngP3lyyF60QZ-0JWPqkj8T9zjOObhibrhlyE-HWtG3weQrX8SC3zLLzN8F5HT7qaMY8XdFZFhYYR2p6Ws2zUr-h0JOnyVTzj8L-ot6FOq6Ib6vIFyNlrvU1iO_NJBm8voJSxVCE1YlHdu7CCwnVVBh0ceIoiZ36p26ADsIylabHO1cqwbHCD6t3-Oyz7OK3EXpxbKNhleF26Iv_SNDco5obMw-Z2IsDEMIRHp-d31DNFenJnhra6kT2lASBmLPLqApuHLzz-bcil6gD-l-xw3ogKpAls-V9rGZHXU6T1aHc2--OMi_8H-EwMddQxrbIdvotaX5cacGp1_D531Q"
+ ]
+}

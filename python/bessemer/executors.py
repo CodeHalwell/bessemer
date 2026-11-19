@@ -9,8 +9,10 @@ import inspect
 import multiprocessing
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Protocol
 
 from ._cpu import cpu_budget
@@ -73,8 +75,21 @@ async def await_completion(work, cancel):
     return work.result()
 
 
+def _shut_down(pools):
+    for pool in pools:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 class BoundedExecutor:
     worker_limit = 256
+    broken_errors = ()
+    # A pool that breaks this soon after it was built, before completing a
+    # job, probably cannot start at all (a child that fails to import or
+    # initialise): its replacement waits, from one second doubling to a
+    # minute, so a stream of jobs does not start a pool of processes each.
+    first_backoff = 1.0
+    max_backoff = 60.0
+    clock = staticmethod(time.monotonic)
 
     def __init__(self, max_workers=None, *, max_pending=128):
         if max_workers is not None and (
@@ -88,9 +103,18 @@ class BoundedExecutor:
         self.worker_processes = 1
         self.pool = None
         self.pending = set()
+        self.rebuilding = False
+        self.discarded = []
+        self.workers = 0
         self.free = deque()
         self.lock = threading.Lock()
         self.closed = False
+        # When the current pool was built and whether it has completed a
+        # job; the wait before the next rebuild and when that wait ends.
+        self.built_at = 0.0
+        self.completed = False
+        self.backoff = 0.0
+        self.retry_at = 0.0
 
     def configure(self, worker_processes):
         if type(worker_processes) is not int or worker_processes < 1:
@@ -101,21 +125,95 @@ class BoundedExecutor:
             if self.pool is not None and not self.closed:
                 return
             self.pool = None
+            self.rebuilding = False
             self.closed = False
+            self.backoff = self.retry_at = 0.0
             self.worker_processes = worker_processes
 
     def start(self):
-        workers = self.max_workers or min(
-            self.worker_limit, max(1, cpu_budget() // self.worker_processes)
-        )
+        if self.rebuilding:
+            # Capacity accounting survives a rebuild: slots still held by
+            # jobs of the discarded pool return through release(). The slot
+            # numbers index the pool's cancellation flags, so a rebuilt pool
+            # keeps the size of the one it replaces even if the CPU budget
+            # has changed since.
+            workers = self.workers
+            self.rebuilding = False
+        else:
+            workers = self.max_workers or min(
+                self.worker_limit, max(1, cpu_budget() // self.worker_processes)
+            )
+            self.workers = workers
+            self.free = deque(range(workers + self.max_pending))
         self.pool = self.create_pool(workers)
-        self.free = deque(range(workers + self.max_pending))
+        self.built_at = self.clock()
+        self.completed = False
+
+    def backing_off(self):
+        """The error a job gets while a broken pool's rebuild waits (lock held)."""
+        if not self.rebuilding:
+            return None
+        remaining = self.retry_at - self.clock()
+        if remaining <= 0:
+            return None
+        return self.broken_errors[0](
+            "the CPU process pool broke before completing a job; "
+            f"it is rebuilt in {remaining:.1f} s"
+        )
+
+    def close_discarded(self):
+        """Shut broken pools down, off this thread and outside the lock.
+
+        concurrent.futures' manager thread holds a broken pool's shutdown
+        lock while it fails each of the pool's jobs, and every failure calls
+        release(), which takes this executor's lock. Shutting the pool down
+        while holding this lock would wait for a lock whose holder is waiting
+        for this one. Its shutdown can also wait for the dead pool's
+        processes, so it is not done on the event loop's thread either.
+        """
+        with self.lock:
+            discarded, self.discarded = self.discarded, []
+        if discarded:
+            threading.Thread(
+                target=_shut_down,
+                args=(discarded,),
+                name="bessemer-cpu-close",
+                daemon=True,
+            ).start()
+
+    def is_broken(self, work):
+        """Whether `work` failed because its whole pool is unusable."""
+        return False
+
+    def discard(self, pool):
+        """Drop a broken pool; a later job builds a new one (lock held).
+
+        A pool that completed a job is replaced by the next one. One that
+        broke soon after it was built, without completing a job, is replaced
+        only once a back-off has passed, doubling each time up to
+        `max_backoff`; meanwhile jobs fail at once without building anything.
+        """
+        if pool is not None and pool is self.pool:
+            self.discarded.append(pool)
+            self.pool = None
+            self.rebuilding = True
+            now = self.clock()
+            if self.completed or now - self.built_at >= self.max_backoff:
+                self.backoff = 0.0
+                self.retry_at = 0.0
+            else:
+                self.backoff = min(
+                    self.max_backoff, max(self.first_backoff, 2 * self.backoff)
+                )
+                self.retry_at = now + self.backoff
 
     def reserve(self, function, args, kwargs):
         with self.lock:
             if self.closed:
                 raise RuntimeError("CPU executor is shut down")
             if self.pool is None:
+                if error := self.backing_off():
+                    raise error
                 self.start()
             if not self.free:
                 raise HTTPException(
@@ -123,11 +221,25 @@ class BoundedExecutor:
                 )
             slot = self.free.popleft()
             try:
-                work = self.schedule(slot, function, args, kwargs)
+                try:
+                    pool = self.pool
+                    work = self.schedule(slot, function, args, kwargs)
+                except self.broken_errors:
+                    # The pool broke before any job noticed: replace it once,
+                    # unless it broke too soon to be replaced yet.
+                    self.discard(pool)
+                    if self.backing_off():
+                        raise
+                    self.start()
+                    pool = self.pool
+                    work = self.schedule(slot, function, args, kwargs)
             except BaseException:
                 self.free.append(slot)
                 raise
+            work.pool = pool
             self.pending.add(work)
+        if self.discarded:
+            self.close_discarded()
         work.add_done_callback(lambda completed: self.release(slot, completed))
         return work, slot
 
@@ -135,6 +247,16 @@ class BoundedExecutor:
         with self.lock:
             self.pending.discard(work)
             self.free.append(slot)
+            if self.is_broken(work):
+                self.discard(getattr(work, "pool", None))
+            elif (
+                not self.completed
+                and getattr(work, "pool", None) is self.pool
+                and not work.cancelled()
+            ):
+                # The pool works: a later break is rebuilt at once.
+                self.completed = True
+                self.backoff = 0.0
 
     def cancel(self, slot, work):
         with self.lock:
@@ -153,6 +275,7 @@ class BoundedExecutor:
         with self.lock:
             self.closed = True
             pool = self.pool
+        self.close_discarded()
         if pool is not None:
             work = asyncio.create_task(asyncio.to_thread(pool.shutdown, wait=wait))
             try:
@@ -186,7 +309,14 @@ class ThreadPoolExecutor(BoundedExecutor):
 
 
 class ProcessPoolExecutor(BoundedExecutor):
+    # A child killed from outside (out of memory, a crash in native code)
+    # breaks the whole pool. ThreadPoolExecutor cannot break this way: an
+    # exception in a thread only fails its own job.
     worker_limit = 61 if sys.platform == "win32" else 256
+    broken_errors = (BrokenProcessPool,)
+
+    def is_broken(self, work):
+        return not work.cancelled() and isinstance(work.exception(), BrokenProcessPool)
 
     def create_pool(self, workers):
         if sys.platform == "win32" and workers > 61:

@@ -160,8 +160,23 @@ shedding: `app.run(max_in_flight=128)`, `--max-in-flight 128` (alias
 Capacity remains held through cancellation cleanup, streaming and
 post-delivery background tasks. The in-flight metric tracks that same lifetime
 but starts at the request's head, so it also counts requests waiting for their
-bodies, which hold no slot (below). Native health remains independent of Python
-loop congestion.
+bodies, which hold no slot (below).
+
+Native health is answered without running Python. It is
+independent of Python loop congestion and of the GIL only where the worker
+serves connections on I/O threads of their own: asyncio's loop, `loops`
+above 1, and Bessemer's loop under the default `event_loop="auto"` for an
+application with `def` handlers, dependencies or exception handlers. On the
+single-thread layout (one Bessemer loop for an all-async application, or
+with `event_loop="bessemer"` or `io_backend="io_uring"` named, or on a
+free-threaded build with the GIL disabled, whatever the application has),
+the thread that answers it also runs the loop: a callback
+that blocks the loop, or any thread that holds the GIL, delays it, and a
+liveness probe can time out on a worker whose only fault is one slow call.
+The worker's start-up line says which layout it runs
+([Bessemer's event loop](application-api.md#bessemers-event-loop));
+`event_loop="asyncio"` keeps health off the loop's thread for any
+application.
 
 A slot is held for work, not for a client the server is waiting on. A request
 that finds no slot free is refused at once, before any of its body is read.
@@ -174,6 +189,27 @@ slot without waiting do not overtake it, and the request timeout bounds the
 wait). A client that declares a body and sends it slowly, or not at all,
 therefore holds a connection and whatever it has sent of the request byte
 budget until the request timeout, but no admission slot.
+
+HTTP/1.1 requests waiting for more of an in-memory body need no further
+bound: a connection carries one request at a time, so `max_connections`
+bounds them, and they are never refused for waiting. HTTP/2 carries up to 100
+streams a connection, so its streams waiting for their bodies are bounded
+instead. Each connection may always have 8 streams waiting, whatever other
+connections do; beyond those it draws on places shared by the worker,
+`max_connections` of them. A stream that has to wait when its connection's own
+places and the shared ones are all taken is answered `503` with
+`Retry-After: 1` at once, as an admission refusal is; only that stream is
+answered and reset, and the connection stays open. Streams parked by one
+client can therefore take the shared places but never another connection's
+own, a worker has at most 8 streams a connection plus `max_connections`
+waiting, and without such a client an ingress multiplexing many slow uploads
+over a few connections has every shared place. A stream holds its place only
+while it waits: it gives it back when its body is complete (and then asks for
+an admission slot as above), at the request timeout, when the client resets
+the stream or the connection closes, and on every other exit. A body that is
+complete when the request is dispatched, and a request without a body, never
+take a place. Spooled uploads take none either: each holds one of its own
+lifetime slots (below) from its first read, waiting or not, which bounds them.
 
 Disk-spooled uploads also take a separate lifetime slot, with the same
 per-worker ceiling as `max_in_flight`. It remains held while the client is
@@ -227,7 +263,9 @@ missing tokens return `401` with `WWW-Authenticate: Bearer`, and invalid ones
 add `error="invalid_token"`. Handlers and dependencies receive the verified
 claims by annotating a parameter with `Principal`; `require_scope(...)` is a
 dependency that returns `403` unless every named scope is present in the
-`scope`, `scp` or `roles` claims.
+`scope`, `scp` or `roles` claims. The check never blocks, so a route runs it on
+its event loop rather than the handler pool, and it does not count as
+synchronous work when `event_loop="auto"` chooses the connection layout.
 
 ```python
 from typing import Annotated
@@ -326,7 +364,20 @@ app = App(jwt=JWTAuth.entra(
 A multi-tenant API lists every tenant it accepts tokens from. Each listed tenant
 gets its own issuer, so a token from an unlisted tenant is rejected even though
 Entra signs it with the same keys; the keys are read from the shared `common`
-endpoint:
+endpoint. That set also holds keys that sign for one issuer only (personal
+Microsoft accounts, for example), and each v2.0 key names the issuer it signs
+for. Under the Entra profile (`entra_access_token`) a key's `issuer` must equal
+the token's `iss`, after a `https://login.microsoftonline.com/{tenantid}/v2.0`
+template takes the token's `tid`, so a key is never used for another tenant's
+issuer. A configuration that lists both issuer forms and reads the v2.0 key
+set also receives v1.0 tokens, whose `iss` is `https://sts.windows.net/{tid}/`
+and which no key's `issuer` names; as in Microsoft's own validator, such a
+token is accepted when its `iss` is exactly `https://<host>/<tid>/` (one path
+segment equal to its string `tid`) and the key's issuer, after the
+substitution, is that tenant's v2.0 issuer (ends with `/<tid>/v2.0`). Any other
+mismatch, a template key with no string `tid`, or a non-string `issuer` member
+is rejected. A key without the member (v1.0 key sets publish none) is not
+restricted:
 
 ```python
 app = App(jwt=JWTAuth.entra(
@@ -404,7 +455,7 @@ are compressed: `text/*`, JSON, JavaScript, XML, `+json` and `+xml` types, SVG,
 WebAssembly and uncompressed fonts. Images, archives and
 `application/octet-stream` pass through untouched.
 
-A response is left alone when it is a HEAD response, a 1xx, 204, 206 or 304,
+A response is not compressed when it is a HEAD response, a 1xx, 204, 206 or 304,
 already has `Content-Encoding` or `Content-Range`, or carries
 `Cache-Control: no-transform`. Buffered bodies shorter than `min_size` bytes
 are not compressed, and a compressed body is only used when it is smaller.
@@ -413,10 +464,38 @@ have a strong `ETag` weakened to `W/"..."`. Every compressible response,
 compressed or not, carries `Vary: Accept-Encoding` so shared caches keep the
 variants apart.
 
+A response sent without its body carries the `ETag` and `Vary` that the 200
+for the same request headers would. A HEAD gets the GET's `Vary` and, when
+the GET would be compressed, its `Content-Encoding` and weak `ETag`; it then
+has no `Content-Length`, which is known only once the body is compressed. A
+static file's or `FileResponse`'s 304 or 206 gets `Vary: Accept-Encoding`
+exactly when its 200 would (a compressible type, no `Content-Encoding` of its
+own, no `no-transform`), and a 304 carries the weak tag when the 200 would be
+compressed for this client (a coding accepted, the file at least `min_size`
+bytes). With compression on, a static file's or `FileResponse`'s
+`If-None-Match` matches only `*` or the tag that client is sent: the weak tag
+from a client that accepts a coding, the file's own tag from one that does
+not. A client listing only the other one holds a different representation and
+is sent the 200. A range is always of the identity representation and keeps
+its strong tag; a precompressed sibling has its own tag, `Vary` and coding. A
+304 or 206 that a handler returns itself, or that ASGI middleware sees from a
+`FileResponse`, is left as it is, since its 200 is not known. A text file of
+`min_size` bytes or more whose compressed form would be no smaller (and so is
+sent uncompressed with its strong tag) is still answered as if compressed.
+
 Streaming responses and server-sent events are compressed frame by frame with
 a sync flush after each frame, so each event still reaches the client as soon
-as it is sent. Bodies over 64 KiB are compressed on the blocking thread pool
-rather than the I/O threads. Compressed bytes keep the original bytes' share
+as it is sent. Compression is CPU work, so bodies and frames of 16 KiB or more
+(every 64 KiB chunk of a file among them) are compressed on the blocking
+thread pool rather than the I/O thread, which in the default layout also runs
+the event loop. Smaller ones are compressed inline, where a thread hop would
+cost more than the compression; once a stream has compressed 64 KiB inline,
+its frames of 1 KiB or more go to the pool too, and a stream yields to other
+connections after each 16 KiB it compresses inline. No more compressions run
+on the pool at once than there are CPUs: the rest wait their turn without
+holding a thread, so many large compressed responses cannot fill the pool
+that file reads also use. Nothing is refused for it; a buffered body's wait
+counts towards the request deadline. Compressed bytes keep the original bytes' share
 of the response byte budget until they are released. A file (a static mount's
 or a `FileResponse`) is not in that budget until it is read, so one small
 enough to compress whole, up to 1 MiB, is reserved in the budget before it is
@@ -474,11 +553,40 @@ a network gives a host the whole /64, so its low 64 bits are the client's own
 to choose, and a quota per full address would be 2^64 quotas for one host.
 
 Exhausted clients receive `429` and an integer `Retry-After`. `max_keys` bounds
-the number of active IP records; a full active table fails closed with `503`
-and `Retry-After` rather than allocating more records. Expired records are
-reclaimed. An unavailable socket address also fails closed when rate limiting
-is enabled. Supported bounds are 1–10000 requests, 0.001–86400 seconds and
-1–100000 keys, with `requests * max_keys <= 5_000_000`.
+the number of active client records. Expired records are reclaimed, but a live
+record is never evicted to make room: that would hand a client that has used
+its quota a fresh one. When the table is full, a client without a record of
+its own is not refused. It is counted in a coarser record shared with its
+network instead:
+
+1. its IPv4 /24 or IPv6 /48, if that network has a live shared record or one
+   can be created;
+2. otherwise its IPv4 /16 or IPv6 /32, on the same terms;
+3. otherwise one record shared by every such client, the last resort.
+
+A shared record allows `requests` per window for everyone counted in it
+together, so the limit still applies, and more strictly: an attacker that fills
+the table from one /48 ends up sharing a single quota across all of it. Shared
+records count requests per eighth of a window and admit while the current
+eighth and the eight before it hold fewer than `requests`, so a shared record
+is never looser than the sliding window and can make a client wait up to an
+eighth of a window longer. Each level keeps at most `max_keys` shared records
+of fixed size (a few dozen bytes, whatever `requests` is), so memory stays
+bounded: `requests * max_keys` timestamps for client records, as before, plus
+at most `2 * max_keys` shared records.
+
+Moving between records never grants a second quota within a window. A client
+leaves its own record only after it has been idle for a full window. A client
+counted in a shared record moves to its own record as soon as the table has
+room (or to a finer shared record once one can be created), and that new record
+starts with the history of the shared record the client was being counted in,
+so a client that used quota there carries that use with it. The cost is that a
+new client in a network whose shared record is busy can wait until that
+history leaves the window, at most nine eighths of a window.
+
+An unavailable socket address fails closed when rate limiting is enabled.
+Supported bounds are 1–10000 requests, 0.001–86400 seconds and 1–100000 keys,
+with `requests * max_keys <= 5_000_000`.
 
 Without `redis` the limits are process local: multiple workers or replicas
 each have their own quota.
@@ -517,7 +625,24 @@ so workers with skewed clocks still agree. Each client IP is a sorted set at
 `key_prefix` plus the address, holding one member per admitted request and
 expiring after one idle window. Use a distinct `key_prefix` for each policy
 that shares a database. `max_keys` bounds only the local table and is rejected
-with `redis`.
+with `redis`; the shared limiter has no local table and never degrades to
+network quotas.
+
+A client the store has answered with a wait is remembered by each worker, and
+for up to one second its requests are answered `429` locally, without a store
+round trip or a pool connection; `Retry-After` is still the store's remaining
+wait. After that second one request asks the store again, while the rest of a
+flood is still answered locally, and the store's answer, admit or wait,
+replaces the remembered one; if that request gets no answer (a store error or
+timeout), another asks a second later. A rejected request adds nothing to the
+store, but the store can still forget a client before its wait ends
+(`FLUSHDB`, an operator deleting the client's key to unblock it, eviction, a
+failover to an empty replica), so such an unblock takes effect on every worker
+within about a second, whatever the window. A client flooding after it has
+been limited costs the store about one round trip a second per worker rather
+than one a request, so it does not exhaust the pool and starve other clients
+into `503`. Each worker remembers at most 4096 waiting clients; beyond that the
+store is asked as before.
 
 Each worker keeps at most `pool_size` connections (1–1024, default 16).
 Connecting, authenticating, selecting the database, running the script and
@@ -526,7 +651,8 @@ reading the reply share one `timeout_seconds` deadline (0.001–10, default
 fails closed with `503`, `Retry-After: 1` and the detail
 `Rate limiter is unavailable`; `fail_open=True` admits it instead. Either way
 `bessemer_rate_limit_store_errors_total` counts the failure and a summary is
-written to stderr at most once a minute. A pooled connection that the server
+written to stderr at most once a minute, with any control characters in the
+server's error text escaped. A pooled connection that the server
 closed is replaced once per request, which can count a request twice if the
 server ran the script but the reply was lost.
 
@@ -558,17 +684,26 @@ contain only `event`, `timestamp`, `method`, declared route template, `status`,
 request and response bodies, cookies and authentication headers are omitted.
 Keep sensitive values out of request IDs and declared static route names.
 
-The producer never waits for stderr: a background writer receives a queue of
-at most 1024 events. Full or disconnected queues drop events and increment
+The producer never waits for stderr: it encodes the event straight into a
+buffer and appends it to a queue of at most 1024 events, waking the background
+writer only when the writer is idle. The writer takes everything queued at
+once and writes it in as few writes as it can, each holding whole events and
+at most 4096 bytes. A full queue, or a closed sink, drops events and increments
 `bessemer_access_log_dropped_total`. A write that fails (a full nonblocking
-pipe, for example) loses and counts that one event and the writer carries on;
-only a closed sink (`EPIPE`) stops it, after which every event is counted as
-dropped. Logging is best effort and pending events
-are not guaranteed to flush after forced shutdown. Route telemetry supports at
-most 1024 declared templates, each at most 1024 bytes.
-Each encoded record, including its newline, is at most 4096 bytes and is emitted
-in one write. On the qualified Linux target this keeps pipe records atomic
-across workers. Oversized records are dropped as whole events and counted.
+pipe, for example) loses and counts the events it carried and the writer
+carries on; only a closed sink (`EPIPE`) stops it, after which every event is
+counted as dropped. Logging is best effort and pending events
+are not guaranteed to flush after forced shutdown.
+Each encoded record, including its newline, is at most 4096 bytes, and no
+record is split across writes. On the qualified Linux target, where a pipe
+write of at most 4096 bytes (`PIPE_BUF`) is atomic, this keeps records from
+several workers from interleaving. Oversized records are dropped as whole
+events and counted.
+
+When metrics, the access log or tracing is on, route telemetry supports at most
+1024 declared route templates, each at most 1024 bytes; a template is counted
+once however many methods it serves. With all three off, route templates are
+not kept and there is no limit.
 
 ## OpenTelemetry tracing
 
@@ -592,11 +727,24 @@ just the method for an unmatched path), with `http.request.method`,
 `url.path`, `http.route`, `http.response.status_code` and `client.address`.
 Query strings, headers and bodies are never recorded. Responses of 500 and
 above, and requests cancelled before a response, have error status. A valid
-`traceparent` header makes the span a child of the caller's span, and its
-`tracestate` (up to 512 bytes) is carried along. Otherwise a new trace starts.
-An invalid or repeated `traceparent` is ignored. Sampling is parent based: the
-caller's sampled flag is always kept, and new traces are sampled with
-probability `sample_ratio` by trace id.
+`traceparent` header from a trusted peer (below) makes the span a child of the
+caller's span, and its `tracestate` (up to 512 bytes) is carried along.
+Otherwise a new trace starts. An invalid or repeated `traceparent` is ignored.
+Sampling is parent based: a trusted caller's sampled flag is always kept, and
+new traces are sampled with probability `sample_ratio` by trace id.
+
+An incoming trace context is honoured only from a peer the deployment trusts:
+one whose socket address is inside `trusted_proxies`, or any peer when
+`trust_inbound_context=True`. From any other peer, `traceparent` and
+`tracestate` are ignored: the request starts a new root trace and
+`sample_ratio` applies. A client therefore cannot choose a span's trace id,
+force spans to be recorded at `sample_ratio=0`, or fill the export queue with
+sampled spans and displace real ones. The span is started before any control
+runs, so this holds for requests that authentication rejects too.
+Behind an ingress proxy that forwards (or starts) trace context, list the proxy
+in `trusted_proxies`. A service that other internal services call directly,
+with no proxy in between, must set `trust_inbound_context=True` to join its
+callers' traces, and should then be reachable only by those services.
 
 Handlers see their span as `request.traceparent`, ready to forward on outbound
 calls. When the `opentelemetry-api` package is installed (`pip install 'bessemer[otel]'`), the span is also the
@@ -604,9 +752,9 @@ current OpenTelemetry context while the route, its dependencies and HTTP
 middleware run, so spans recorded with the OpenTelemetry SDK become its
 children. Sync handlers inherit it on the executor.
 
-Without an `endpoint`, nothing is exported: the caller's `traceparent` is
-only propagated to the handler and the SDK, for applications that export with
-the OpenTelemetry SDK themselves.
+Without an `endpoint`, nothing is exported: a trusted caller's `traceparent`
+is only propagated to the handler and the SDK, for applications that export
+with the OpenTelemetry SDK themselves. An untrusted caller's is not propagated.
 
 Spans are exported as OTLP/HTTP JSON to `endpoint`, `http` or `https`, from a
 dedicated thread with a queue of 2048 spans. Batches hold up to 512 spans and

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import concurrent.futures
 import enum
 import importlib.util
@@ -80,6 +81,41 @@ class PlainJSONEncoderTests(unittest.TestCase):
         ):
             with self.subTest(value=repr(value)[:40]):
                 self.assertIsNone(self.encode(value, 4096))
+
+    def test_lone_surrogates_are_refused_before_the_codec_error_handler(self):
+        # Converting a lone surrogate to UTF-8 consults the codec error
+        # registry, where an application may have put Python code that frees
+        # what the encoder is still reading. The string must be refused first.
+        payload = ["x\ud800", *(str(index) * 4096 for index in range(1, 4))]
+        reached = []
+
+        def handler(error):
+            reached.append(error.object)
+            del payload[1:]
+            return ("?", error.end)
+
+        values = (
+            payload,
+            {"k": payload},
+            {"k\udc00": 1, "z": payload},
+            "\N{SNOWMAN}\U0001f642\ud800",
+        )
+        codecs.register_error("strict", handler)
+        try:
+            results = [self.encode(value, 1 << 20) for value in values]
+        finally:
+            codecs.register_error("strict", codecs.strict_errors)
+        self.assertEqual(results, [None] * len(values))
+        self.assertEqual(reached, [])
+        self.assertEqual(len(payload), 4)
+        # Wide strings without surrogates still encode, and again once their
+        # UTF-8 form is cached.
+        value = ["\N{SNOWMAN}\U0001f642", "Ā￿", "퟿"]
+        for _ in range(2):
+            self.assertEqual(
+                self.encode(value, 1024),
+                json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode(),
+            )
 
     def test_byte_limit_is_exact_and_falls_back_when_exceeded(self):
         value = {"key": "x" * 10}
@@ -359,6 +395,67 @@ class FastPathHTTPTests(unittest.TestCase):
         # Repeated native-thread entry into Python must stay stable.
         for _ in range(200):
             self.assertEqual(self.server.request("GET", "/plain-created")[0], 201)
+
+
+SHRINKING_DICT_ROUTES = """
+
+import codecs
+import gc
+import itertools
+
+from bessemer import JSONResponse
+
+MARKER = "shrinking-dict-marker"
+seen = []
+counter = itertools.count()
+
+
+def shrink(error):
+    # jsonable() reaches this first; the native conversion of the copy it
+    # returns is the second call for the same string, and shrinks that copy
+    # while it is being walked.
+    seen.append(error.object)
+    if seen.count(error.object) == 2:
+        for referrer in gc.get_referrers(MARKER):
+            if type(referrer) is dict and "zz" in referrer:
+                referrer.pop("zz")
+    return ("?", error.end)
+
+
+codecs.register_error("strict", shrink)
+
+
+@app.get('/shrinking')
+async def shrinking():
+    key = "b\\ud800" + str(next(counter))
+    return JSONResponse({"a": [1], key: MARKER, "c": 3, "zz": 4})
+"""
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class ResponseDictMutationHTTPTests(unittest.TestCase):
+    def test_a_response_dict_that_changes_size_is_a_server_error(self):
+        # PyO3's dict iterator panicked here, which ended the worker's event
+        # loop thread: every later request on the worker failed.
+        server = test_native_integration.Server(
+            application=test_native_integration.APPLICATION + SHRINKING_DICT_ROUTES
+        )
+        try:
+            for _ in range(3):
+                status, _, body = server.request("GET", "/shrinking")
+                self.assertEqual(status, 500, body)
+                # A Python route: the native health route does not need the
+                # worker's event loop.
+                status, _, body = server.request("GET", "/items/1?enabled=true")
+                self.assertEqual(
+                    (status, json.loads(body)), (200, {"id": 1, "enabled": True})
+                )
+            server.log.seek(0)
+            output = server.log.read()
+        finally:
+            server.close()
+        self.assertNotIn("panicked", output)
+        self.assertIn("could not encode the response", output)
 
 
 if __name__ == "__main__":

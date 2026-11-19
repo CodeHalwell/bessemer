@@ -147,7 +147,8 @@ generated from the document.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| `method`, `headers`, `cookies`, `path_params`, `state`, `app`, `body()`, `json()`, `url_for()` | Same | `url_for` now returns a `URL`. |
+| `method`, `cookies`, `path_params`, `state`, `app`, `body()`, `json()`, `url_for()` | Same | `url_for` now returns a `URL`. |
+| `headers` | Differs | With a repeated header, `headers.get(name)` and `headers[name]` return the **last** value; Starlette's `Headers` returns the **first** (checked against `starlette==1.7.0`). `getlist(name)` returns every value, in order, as in Starlette. Code that reads an identity header a proxy sets (`X-Forwarded-For`, `X-Forwarded-User`, `X-Real-IP`) must decide which value it trusts, for example with `getlist`, rather than assume the first. |
 | `url`, `base_url` | Added | Now a `URL`: a `str` subclass with `scheme`, `hostname`, `port`, `path`, `query`, `replace()` and `include_query_params()`. |
 | `query_params` | Added | Now a `QueryParams` with `getlist()` and `multi_items()`. It is parsed on first use, which is also slightly faster for handlers that never read it. |
 | `client` | Differs | An `Address`, a `str` subclass with `.host`. `.port` is `None` because the native transport passes only the IP. |

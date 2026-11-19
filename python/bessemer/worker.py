@@ -1135,6 +1135,64 @@ def _resolve_io_backend(io_backend: str, serves_connections: bool) -> str:
     return io_backend
 
 
+def _sync_work(compiled, apps) -> str | None:
+    """The first synchronous callable a request can run on the handler pool.
+
+    What the compiled application shows before it serves: ``def`` route
+    handlers (WebSocket handlers are always async), request-scoped ``def``
+    and generator dependencies at any depth, mounted apps' routes included,
+    and ``def`` exception handlers. HTTP middleware is always async.
+    Application-scoped dependencies run at startup. Sync background tasks and
+    iterators are only known when a handler returns them, so they are not
+    counted. Returns a short description for the start-up line, or None.
+    """
+    for route in compiled:
+        declaration = route.declaration
+        where = f"{declaration['method']} {declaration['path']}"
+        plan = route.plan
+        if plan is not None and plan.kind in ("sync", "generator"):
+            return f"sync handler {where}"
+        for dependency in route.dependencies:
+            if dependency.scope == "request" and dependency.kind in (
+                "sync",
+                "generator",
+            ):
+                return f"sync dependency of {where}"
+    for app in apps:
+        for exception_type, plan in getattr(app, "_exception_handlers", {}).items():
+            if plan.kind == "sync":
+                name = getattr(exception_type, "__name__", exception_type)
+                return f"sync exception handler for {name}"
+    return None
+
+
+def _connection_layout(
+    requested: str, resolved: str, loops: int, io_backend: str, compiled, apps
+) -> tuple[bool, str | None]:
+    """Whether connections are served on the loop's own thread, and why.
+
+    Only a worker running one Rust loop can. Its thread then also takes the
+    GIL for every callback, so while a handler thread holds the GIL no
+    connection is accepted, read or written, native health included. Under
+    ``event_loop="auto"`` a worker whose application has synchronous work
+    (``_sync_work``) therefore serves connections on the server's own I/O
+    threads, as a worker with several loops does. ``event_loop="bessemer"``
+    named explicitly keeps the loop's thread, as does ``io_backend="io_uring"``,
+    which needs it, and a build whose GIL is disabled, where the loop never
+    waits for it.
+    """
+    if resolved != "bessemer" or loops != 1:
+        return False, None
+    if requested == "bessemer":
+        return True, "event_loop=bessemer"
+    if io_backend == "io_uring":
+        return True, "io_backend=io_uring"
+    if not getattr(sys, "_is_gil_enabled", lambda: True)():
+        return True, "GIL disabled"
+    work = _sync_work(compiled, apps)
+    return work is None, work
+
+
 def _loop_factory(event_loop: str):
     """Return the constructor for a resolved event loop name."""
     if event_loop == "bessemer":
@@ -1340,6 +1398,7 @@ class Worker:
         io_backend: str = "epoll",
     ) -> None:
         validate_loops(loops)
+        requested_loop = event_loop
         event_loop = _resolve_event_loop(event_loop, loops)
         validate_choice("io_backend", io_backend)
         new_loop = _loop_factory(event_loop)
@@ -1526,11 +1585,20 @@ class Worker:
         self._heartbeat_task: asyncio.Task | None = None
         self._executor = _sync_executor(sync_workers, implicit_sync)
         self._loop = new_loop()
-        # With the Rust loop and a single lane, the HTTP server runs on the
+        # With the Rust loop and a single lane, the HTTP server can run on the
         # loop's own thread in the loop's embedded Tokio runtime: no hand-off
-        # between threads per request. The runtime must exist before the
-        # loop first runs, so its waits are made in it.
-        self._serves_connections = event_loop == "bessemer" and loops == 1
+        # between threads per request (see _connection_layout for when). The
+        # runtime must exist before the loop first runs, so its waits are
+        # made in it.
+        self._event_loop = event_loop
+        self._serves_connections, self._layout_reason = _connection_layout(
+            requested_loop,
+            event_loop,
+            loops,
+            io_backend,
+            self._compiled,
+            self._cpu_apps,
+        )
         if self._serves_connections:
             self._loop._core_enable_runtime()
         self._io_backend = _resolve_io_backend(io_backend, self._serves_connections)
@@ -1558,6 +1626,15 @@ class Worker:
         self._closed = False
         self._thread = threading.Thread(
             target=self._run, name="bessemer-asyncio", daemon=True
+        )
+
+    def _layout_line(self) -> str:
+        """The start-up line naming the worker's loop and connection layout."""
+        layout = "loop-thread" if self._serves_connections else "io-threads"
+        reason = f" ({self._layout_reason})" if self._layout_reason else ""
+        return (
+            f"Bessemer worker pid={os.getpid()} event_loop={self._event_loop} "
+            f"loops={len(self._lanes)} connections={layout}{reason}"
         )
 
     @property

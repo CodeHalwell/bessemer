@@ -602,7 +602,15 @@ class _OpenFile:
     __slots__ = ("_file",)
 
     def __init__(self, path: str) -> None:
-        self._file: Any = open(path, "rb")  # noqa: SIM115 -- Closed by close() / __del__.
+        self._file: Any = None
+        # Without O_NONBLOCK, opening a path replaced by a FIFO would wait for
+        # a writer; anything but a regular file is refused once opened.
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0))
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise RuntimeError(f"File at path {path} is not a file.")
+        self._file = os.fdopen(descriptor, "rb")
 
     def read_chunk(self) -> bytes:
         if self._file is None:
@@ -622,9 +630,12 @@ class FileResponse(Response):
     """Send a file from disk, as FastAPI's ``FileResponse`` does.
 
     The media type is guessed from ``filename`` or ``path`` unless given, and
-    ``filename`` adds a ``Content-Disposition`` header. The runtime serves the
-    open file natively on the static-file path with ``ETag``,
-    ``Last-Modified``, conditional requests and single byte ranges.
+    ``filename`` adds a ``Content-Disposition`` header. The file is opened
+    when the handler returns the response, so it is still sent if a
+    dependency's cleanup then removes the path; it is refused if it is no
+    longer a regular file. Its contents are read off the event loop and
+    served natively on the static-file path with ``ETag``, ``Last-Modified``,
+    conditional requests and single byte ranges.
     """
 
     chunk_size = 64 * 1024
@@ -732,6 +743,15 @@ def _event_field(name: str, value: Any) -> str:
     return text
 
 
+def _event_lines(value: Any) -> list[str]:
+    # The format ends a line at "\r\n", "\r" or "\n"; each piece of the text
+    # becomes its own field line.
+    text = str(value)
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.split("\n")
+
+
 # The encoder ``json.dumps(..., ensure_ascii=False, separators=(",", ":"))``
 # would build on every call.
 _SSE_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
@@ -748,9 +768,7 @@ def format_event(
     """Encode one server-sent event. Non-string data is sent as JSON."""
     lines = []
     if comment is not None:
-        lines.extend(
-            f": {line}" for line in _event_field("comment", comment).split("\n")
-        )
+        lines.extend(f": {line}" for line in _event_lines(comment))
     if event is not None:
         lines.append(f"event: {_event_field('event', event)}")
     if id is not None:
@@ -771,7 +789,7 @@ def format_event(
                 except (TypeError, ValueError):
                     plain = False
             data = _SSE_ENCODER.encode(data if plain else jsonable(data))
-        lines.extend(f"data: {line}" for line in _event_field("data", data).split("\n"))
+        lines.extend(f"data: {line}" for line in _event_lines(data))
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
 

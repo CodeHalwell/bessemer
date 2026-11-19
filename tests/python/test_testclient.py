@@ -3,10 +3,12 @@
 import asyncio
 import http.client
 import http.cookiejar
+import select
 import signal
 import threading
 import unittest
 from contextlib import asynccontextmanager
+from unittest import mock
 
 from bessemer import App, Depends, HTTPException, Query, RedirectResponse, Request
 from bessemer.testclient import TestClient
@@ -371,6 +373,10 @@ class TestClientTests(unittest.TestCase):
             stale = client._connection
             # Simulate the server closing the idle keep-alive connection.
             stale.sock.shutdown(2)
+            # Linux reports the socket readable at once; Windows only when
+            # the server's own close has come back, which the client waits
+            # for here as it would have between two real requests.
+            select.select([stale.sock], [], [], 5)
             self.assertEqual(client.post("/echo", json={"a": 1}).json(), {"a": 1})
             self.assertIsNot(client._connection, stale)
 
@@ -401,6 +407,50 @@ class TestClientTests(unittest.TestCase):
             client._connection = dropped
             self.assertEqual(client.get("/items/1").status_code, 200)
             self.assertEqual(dropped.sent, ["GET"])
+
+    def test_a_client_in_a_worker_child_never_hands_its_listener_over(self):
+        # Every child of a supervised worker inherits this variable; it must
+        # not make the native server close the client's own listening socket.
+        import os
+        import socket
+
+        from bessemer import _native
+
+        owned = []
+        real_serve = _native.serve
+
+        def serve(*args, **kwargs):
+            owned.append(kwargs["own_listener"])
+            return real_serve(*args, **kwargs)
+
+        listeners = []
+
+        class Spy(socket.socket):
+            def listen(self, *args):
+                listeners.append(self)
+                return super().listen(*args)
+
+        app = App()
+
+        @app.get("/")
+        def index():
+            return {"ok": True}
+
+        with (
+            mock.patch.dict(os.environ, {"BESSEMER_SUPERVISED_WORKER": "1"}),
+            mock.patch.object(_native, "serve", serve),
+            mock.patch("bessemer.testclient.socket.socket", Spy),
+            TestClient(app) as client,
+        ):
+            listener = listeners[0]
+            # Still the client's own listening socket after a request: a
+            # closed one has no address, and Windows has no inode to compare.
+            address = listener.getsockname()
+            self.assertEqual(client.get("/").status_code, 200)
+            self.assertEqual(listener.getsockname(), address)
+            self.assertEqual(address[1], client._port)
+        self.assertEqual(owned, [False])
+        self.assertEqual(listener.fileno(), -1)
 
 
 class DependencyOverrideTests(unittest.TestCase):

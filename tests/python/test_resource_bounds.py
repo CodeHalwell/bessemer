@@ -13,6 +13,7 @@ import sys
 import time
 import unittest
 
+from test_http2 import H2, OWN_PLACES, _H2Client, _park
 from test_native_integration import Server
 from test_websockets import Client
 
@@ -385,6 +386,35 @@ class WaitingForTheClientTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(result), {"size": len(data), "sum": sum(data) % 65536}
             )
+
+    @unittest.skipUnless(H2, "requires the h2 package")
+    def test_streams_parked_on_http2_never_refuse_an_http1_upload(self):
+        # Only HTTP/2 streams take places to wait for their bodies: an HTTP/1.1
+        # connection carries one request at a time, so connections bound those.
+        shared = 4
+        server = Server(
+            application=WAITING,
+            max_body_size=65_536,
+            extra_args=("--max-connections", str(shared), "--request-timeout", "30"),
+        )
+        self.addCleanup(server.close)
+        parked = _H2Client(server.port)
+        self.addCleanup(parked.close)
+        # Every place there is: the connection's own and every shared one.
+        _park(self, parked, OWN_PLACES + shared)
+        for pieces in ([b'{"a": 1}'], [b'{"a":', b" 1}"]):
+            with self.subTest(pieces=len(pieces)):
+                with socket.create_connection(
+                    ("127.0.0.1", server.port), timeout=5
+                ) as upload:
+                    upload.sendall(self.ECHO)
+                    for piece in pieces:
+                        # The body follows its head, so the request waits.
+                        time.sleep(0.3)
+                        upload.sendall(piece)
+                    head, body = answer(upload)
+                self.assertTrue(head.startswith(b"HTTP/1.1 200 "), head[:60])
+                self.assertEqual(json.loads(body), {"a": 1})
 
 
 @unittest.skipUnless(NATIVE, "build the native extension first")

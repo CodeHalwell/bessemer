@@ -119,16 +119,88 @@ impl AllowedHost {
 struct RateEntry {
     requests: VecDeque<Instant>,
 }
+
+/// A shared record counts admissions per slot of `window / SLOTS`.
+const SLOTS: u64 = 8;
+
+/// The quota of every client of a network (or of all clients) that has no
+/// record of its own because the table was full. It counts admissions per
+/// slot, keeping the current slot and the `SLOTS` before it, and admits while
+/// their sum is below `requests`. Those slots span more than any window that
+/// ends now, so the limit is never looser than the sliding window, and the
+/// record has a fixed size whatever `requests` is.
+#[derive(Clone, Copy, Default)]
+struct SharedCount {
+    /// The newest slot counted, numbered from `RateLimit::origin`.
+    slot: u64,
+    counts: [u16; SLOTS as usize + 1],
+}
+
+impl SharedCount {
+    /// Move to `slot`, forgetting the slots that have left the span.
+    fn roll(&mut self, slot: u64) {
+        if slot <= self.slot {
+            return;
+        }
+        if slot - self.slot > SLOTS {
+            self.counts = [0; SLOTS as usize + 1];
+        } else {
+            for index in self.slot + 1..=slot {
+                self.counts[(index % (SLOTS + 1)) as usize] = 0;
+            }
+        }
+        self.slot = slot;
+    }
+
+    fn count(&self, slot: u64) -> usize {
+        usize::from(self.counts[(slot % (SLOTS + 1)) as usize])
+    }
+
+    fn total(&self) -> usize {
+        self.counts.iter().map(|count| usize::from(*count)).sum()
+    }
+}
+
+/// Which shared record a client without its own is counted in.
+#[derive(Clone, Copy)]
+enum Shared {
+    /// Level 0 is the IPv4 /24 or IPv6 /48, level 1 the /16 or /32.
+    Network(usize, IpAddr),
+    Everyone,
+}
+
 struct RateState {
     entries: HashMap<IpAddr, RateEntry>,
     last_prune: Instant,
+    /// Shared records by network, finest level first; each holds at most
+    /// `max_keys` records.
+    networks: [HashMap<IpAddr, SharedCount>; 2],
+    last_network_prune: [Instant; 2],
+    /// The last resort, when no network record can be made either.
+    everyone: SharedCount,
 }
+
+impl RateState {
+    fn shared(&mut self, record: Shared) -> &mut SharedCount {
+        match record {
+            Shared::Network(level, network) => self.networks[level]
+                .get_mut(&network)
+                .expect("a chosen network record exists"),
+            Shared::Everyone => &mut self.everyone,
+        }
+    }
+}
+
 struct RateLimit {
     requests: usize,
     window: Duration,
     max_keys: usize,
     exclude_paths: HashSet<String>,
     state: Mutex<RateState>,
+    /// When slot 0 of the shared records began.
+    origin: Instant,
+    /// `window / SLOTS`, in nanoseconds.
+    slot_nanos: u64,
     /// Decisions shared through Redis instead of the local table.
     shared: Option<crate::redis::SharedLimiter>,
 }
@@ -477,11 +549,17 @@ impl Cors {
         })
     }
 
+    /// The `Access-Control-Allow-Origin` value for a request's `Origin`. An
+    /// allowlist holds only serialized origins (checked at startup), so an
+    /// exact match is one: only the wildcard needs the origin parsed.
     fn origin(&self, origin: &str) -> Option<HeaderValue> {
-        if !serialized_origin(origin) || (!self.wildcard && !self.origins.contains(origin)) {
+        if self.wildcard {
+            return serialized_origin(origin).then(|| HeaderValue::from_static("*"));
+        }
+        if !self.origins.contains(origin) {
             return None;
         }
-        HeaderValue::from_str(if self.wildcard { "*" } else { origin }).ok()
+        HeaderValue::from_str(origin).ok()
     }
 
     fn preflight(&self, method: &str, headers: &HeaderMap) -> Response {
@@ -681,6 +759,21 @@ fn rate_key(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// The network whose shared record counts a client at `level` when its own
+/// record cannot be made: an IPv4 /24 then /16, an IPv6 /48 then /32.
+fn rate_network(ip: IpAddr, level: usize) -> IpAddr {
+    match ip {
+        IpAddr::V4(address) => {
+            let bits = [24, 16][level];
+            IpAddr::V4((u32::from(address) & (u32::MAX << (32 - bits))).into())
+        }
+        IpAddr::V6(address) => {
+            let bits = [48, 32][level];
+            IpAddr::V6((u128::from(address) & (u128::MAX << (128 - bits))).into())
+        }
+    }
+}
+
 impl RateLimit {
     fn parse(value: &Value) -> Result<Self, String> {
         let config = object(value, "rate_limit")?;
@@ -723,15 +816,23 @@ impl RateLimit {
         if !seconds.is_finite() || !(0.001..=86_400.0).contains(&seconds) {
             return Err("rate_limit window_seconds must be between 0.001 and 86400".into());
         }
+        let window = Duration::from_secs_f64(seconds);
+        let now = Instant::now();
         Ok(Self {
             requests,
-            window: Duration::from_secs_f64(seconds),
+            window,
             max_keys,
             exclude_paths: exclusions(config)?,
             state: Mutex::new(RateState {
                 entries: HashMap::new(),
-                last_prune: Instant::now(),
+                last_prune: now,
+                networks: [HashMap::new(), HashMap::new()],
+                last_network_prune: [now; 2],
+                everyone: SharedCount::default(),
             }),
+            origin: now,
+            // At least 125 microseconds: the window is at least a millisecond.
+            slot_nanos: (window.as_nanos() / u128::from(SLOTS)).max(1) as u64,
             shared,
         })
     }
@@ -747,30 +848,168 @@ impl RateLimit {
         }
     }
 
+    /// Count a request from `ip` (its `rate_key`) at `now`.
+    ///
+    /// A client with a record of its own is counted there. A client without
+    /// one gets one while the table has room; when it is full, the client is
+    /// counted in a shared record instead (see `shared_record`), so a full
+    /// table degrades to coarser, shared quotas rather than refusing anyone.
+    /// Live records are never evicted: that would give a client that has used
+    /// its quota a fresh one.
+    ///
+    /// No client gets a second quota by moving between records. A new record
+    /// starts with the history of the shared record the client would have
+    /// been counted in (the finest live one for its address), which holds at
+    /// least every request the client made in a shared record within the span
+    /// that record remembers; and a client only stops using a record once it
+    /// has been idle for a window (its own) or has forgotten every request
+    /// (a shared one).
     fn admit_at(&self, ip: IpAddr, now: Instant) -> Result<(), (StatusCode, u64)> {
         let mut state = self.state.lock().unwrap();
-        if !state.entries.contains_key(&ip) && state.entries.len() >= self.max_keys {
-            if now.saturating_duration_since(state.last_prune)
-                >= Duration::from_secs(1).min(self.window)
-            {
-                state.entries.retain(|_, entry| {
-                    entry
-                        .requests
-                        .back()
-                        .is_some_and(|last| now.saturating_duration_since(*last) < self.window)
-                });
-                state.last_prune = now;
+        let state = &mut *state;
+        if let Some(entry) = state.entries.get_mut(&ip) {
+            return self.count(entry, now);
+        }
+        let interval = Duration::from_secs(1).min(self.window);
+        if state.entries.len() >= self.max_keys
+            && now.saturating_duration_since(state.last_prune) >= interval
+        {
+            state.entries.retain(|_, entry| {
+                entry
+                    .requests
+                    .back()
+                    .is_some_and(|last| now.saturating_duration_since(*last) < self.window)
+            });
+            state.last_prune = now;
+        }
+        let slot = self.slot(now);
+        let found = self.live_record(state, ip, slot);
+        if state.entries.len() < self.max_keys {
+            let mut entry = RateEntry {
+                requests: found.map_or_else(VecDeque::new, |record| {
+                    self.history(state.shared(record), slot, now)
+                }),
+            };
+            let result = self.count(&mut entry, now);
+            state.entries.insert(ip, entry);
+            return result;
+        }
+        let record = match found {
+            Some(record @ Shared::Network(0, _)) => record,
+            _ => self.shared_record(state, ip, slot, now, found),
+        };
+        let shared = state.shared(record);
+        shared.roll(slot);
+        if shared.total() < self.requests {
+            let index = (shared.slot % (SLOTS + 1)) as usize;
+            shared.counts[index] += 1;
+            return Ok(());
+        }
+        // The earliest slot whose departure brings the total under the limit.
+        let mut excess = shared.total() + 1 - self.requests;
+        let mut leaving = shared.slot - SLOTS.min(shared.slot);
+        loop {
+            excess = excess.saturating_sub(shared.count(leaving));
+            if excess == 0 || leaving == shared.slot {
+                break;
             }
-            if state.entries.len() >= self.max_keys {
-                return Err((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    self.window.as_secs_f64().ceil() as u64,
-                ));
+            leaving += 1;
+        }
+        let gone = self.origin + Duration::from_nanos((leaving + SLOTS + 1) * self.slot_nanos);
+        let retry = gone.saturating_duration_since(now).as_secs_f64().ceil() as u64;
+        Err((StatusCode::TOO_MANY_REQUESTS, retry.max(1)))
+    }
+
+    /// The slot `now` falls in.
+    fn slot(&self, now: Instant) -> u64 {
+        (now.saturating_duration_since(self.origin).as_nanos() / u128::from(self.slot_nanos)) as u64
+    }
+
+    /// The finest shared record for `ip` that still remembers a request, if
+    /// any; records that remember none are dropped on the way.
+    fn live_record(&self, state: &mut RateState, ip: IpAddr, slot: u64) -> Option<Shared> {
+        for level in 0..2 {
+            let network = rate_network(ip, level);
+            if let Some(record) = state.networks[level].get_mut(&network) {
+                record.roll(slot);
+                if record.total() > 0 {
+                    return Some(Shared::Network(level, network));
+                }
+                state.networks[level].remove(&network);
             }
         }
-        let entry = state.entries.entry(ip).or_insert_with(|| RateEntry {
-            requests: VecDeque::new(),
-        });
+        state.everyone.roll(slot);
+        (state.everyone.total() > 0).then_some(Shared::Everyone)
+    }
+
+    /// The shared record to count `ip` in when the table is full and its
+    /// /24 (/48) record holds nothing: a new /24 record if there is room,
+    /// else its live /16 (/32) record, a new one if there is room, and
+    /// otherwise the record shared by everyone. A new record starts with the
+    /// history of `found`, the finest live record it is made beneath.
+    fn shared_record(
+        &self,
+        state: &mut RateState,
+        ip: IpAddr,
+        slot: u64,
+        now: Instant,
+        found: Option<Shared>,
+    ) -> Shared {
+        let interval = Duration::from_secs(1).min(self.window);
+        for level in 0..2 {
+            if let Some(record @ Shared::Network(found_level, _)) = found
+                && found_level == level
+            {
+                return record;
+            }
+            let table = &mut state.networks[level];
+            if table.len() >= self.max_keys
+                && now.saturating_duration_since(state.last_network_prune[level]) >= interval
+            {
+                table.retain(|_, record| {
+                    record.roll(slot);
+                    record.total() > 0
+                });
+                state.last_network_prune[level] = now;
+            }
+            if table.len() < self.max_keys {
+                let seed = match found {
+                    Some(Shared::Network(found_level, network)) => {
+                        state.networks[found_level][&network]
+                    }
+                    Some(Shared::Everyone) => state.everyone,
+                    None => SharedCount {
+                        slot,
+                        ..SharedCount::default()
+                    },
+                };
+                let network = rate_network(ip, level);
+                state.networks[level].insert(network, seed);
+                return Shared::Network(level, network);
+            }
+        }
+        Shared::Everyone
+    }
+
+    /// A shared record's requests as a client's own history: each slot's
+    /// count at the slot's end (or now), no earlier than the requests it
+    /// counts, keeping the newest `requests`.
+    fn history(&self, record: &SharedCount, slot: u64, now: Instant) -> VecDeque<Instant> {
+        let mut history = VecDeque::new();
+        let mut room = self.requests;
+        for index in (slot - SLOTS.min(slot)..=slot).rev() {
+            let count = record.count(index).min(room);
+            room -= count;
+            let end = (self.origin + Duration::from_nanos((index + 1) * self.slot_nanos)).min(now);
+            for _ in 0..count {
+                history.push_front(end);
+            }
+        }
+        history
+    }
+
+    /// Count a request in a client's own record.
+    fn count(&self, entry: &mut RateEntry, now: Instant) -> Result<(), (StatusCode, u64)> {
         while entry
             .requests
             .front()
@@ -983,7 +1222,13 @@ impl Controls {
         self.tracer.clone()
     }
 
+    /// Give telemetry the declared route templates. Only metrics, the access
+    /// log and spans use them as labels, so without those nothing is kept
+    /// and no limit applies.
     pub fn register_routes(&self, routes: &[String]) -> Result<(), String> {
+        if !self.observed {
+            return Ok(());
+        }
         let mut routes = routes.to_vec();
         if let Some(path) = &self.metrics_path {
             routes.push(path.clone());
@@ -1002,7 +1247,11 @@ impl Controls {
         let request_id_header = self.request_id.then(|| request_id(headers));
         let client = client_ip(peer, headers, &self.trusted_proxies);
         let trace = self.tracer.as_ref().and_then(|tracer| {
-            tracer.start(headers).map(|span| {
+            // Only a trusted proxy (or, when configured, any peer) may say
+            // which trace a request belongs to and whether it is sampled.
+            let honoured = tracer.trusts_every_peer()
+                || peer.is_some_and(|peer| trusted(peer.ip(), &self.trusted_proxies));
+            tracer.start(headers, honoured).map(|span| {
                 Box::new(crate::telemetry::Trace {
                     tracer: tracer.clone(),
                     span,
@@ -1143,12 +1392,12 @@ impl Controls {
             if let Err((status, retry)) = Box::pin(rate.admit(ip)).await {
                 let mut response = reject(
                     status,
+                    // Only a shared store can fail to decide; the local
+                    // table degrades instead of refusing.
                     if status == StatusCode::TOO_MANY_REQUESTS {
                         "Rate limit exceeded"
-                    } else if rate.shared.is_some() {
-                        "Rate limiter is unavailable"
                     } else {
-                        "Rate limiter is at capacity"
+                        "Rate limiter is unavailable"
                     },
                 );
                 response.headers_mut().insert(
@@ -1749,6 +1998,55 @@ mod tests {
         );
     }
 
+    /// An allowlisted origin is matched by exact comparison without parsing
+    /// it: the answer is the one parsing and comparing gave.
+    #[test]
+    fn origins_match_the_allowlist_exactly_as_parsing_did() {
+        let allowed = [
+            "https://good.test",
+            "http://good.test:8080",
+            "https://[::1]:8443",
+            "null",
+        ];
+        let listed = Cors::parse(&json!({"origins": allowed})).unwrap();
+        let wildcard = Cors::parse(&json!({"origins": ["*"]})).unwrap();
+        for origin in [
+            "https://good.test",
+            "HTTPS://good.test",
+            "https://GOOD.test",
+            "https://good.test:443",
+            "https://good.test/",
+            "https://good.test/path",
+            "https://good.test.",
+            "http://good.test",
+            "http://good.test:8080",
+            "http://good.test:08080",
+            "http://good.test:8080/",
+            "https://[::1]:8443",
+            "https://[0::1]:8443",
+            "null",
+            "NULL",
+            "https://user@good.test",
+            "https://good.test?x",
+            "ftp://good.test",
+            "",
+            "*",
+            "https://evil.test",
+        ] {
+            let before = serialized_origin(origin) && listed.origins.contains(origin);
+            assert_eq!(
+                listed.origin(origin),
+                before.then(|| HeaderValue::from_str(origin).unwrap()),
+                "{origin}"
+            );
+            assert_eq!(
+                wildcard.origin(origin),
+                serialized_origin(origin).then(|| HeaderValue::from_static("*")),
+                "{origin}"
+            );
+        }
+    }
+
     #[test]
     fn forwarded_addresses_follow_only_trusted_hops_from_the_right() {
         let proxies = vec!["10.0.0.0/8".parse().unwrap()];
@@ -1782,15 +2080,209 @@ mod tests {
             rate.admit_at(ip, now + Duration::from_secs(9)),
             Err((StatusCode::TOO_MANY_REQUESTS, 1))
         );
+        // The table is full: other clients share their /24's quota instead
+        // of being refused.
+        let other = |last: u8| IpAddr::from([192, 0, 2, last]);
+        assert!(
+            rate.admit_at(other(2), now + Duration::from_secs(9))
+                .is_ok()
+        );
+        assert!(
+            rate.admit_at(other(3), now + Duration::from_secs(9))
+                .is_ok()
+        );
+        // A shared record counts by eighths of a window, so its wait can be
+        // up to an eighth longer than an exact window's.
         assert_eq!(
-            rate.admit_at("192.0.2.2".parse().unwrap(), now + Duration::from_secs(9)),
-            Err((StatusCode::SERVICE_UNAVAILABLE, 10))
+            rate.admit_at(other(4), now + Duration::from_secs(9)),
+            Err((StatusCode::TOO_MANY_REQUESTS, 11))
         );
         assert!(rate.admit_at(ip, now + Duration::from_secs(10)).is_ok());
         assert!(
-            rate.admit_at("192.0.2.2".parse().unwrap(), now + Duration::from_secs(21))
+            rate.admit_at(other(2), now + Duration::from_secs(21))
                 .is_ok()
         );
+        let state = rate.state.lock().unwrap();
+        assert_eq!(state.entries.len(), 1);
+        assert!(state.entries[&other(2)].requests.len() <= 2);
+    }
+
+    #[test]
+    fn a_full_table_degrades_to_shared_network_quotas_and_never_refuses() {
+        let rate =
+            RateLimit::parse(&json!({"requests":2,"window_seconds":10,"max_keys":3})).unwrap();
+        let now = Instant::now();
+        let at = |ip: &str, seconds: u64| {
+            rate.admit_at(
+                rate_key(ip.parse().unwrap()),
+                now + Duration::from_secs(seconds),
+            )
+        };
+        // An attacker fills the table with three /64s of its /48 ...
+        for host in ["2001:db8:aa:1::1", "2001:db8:aa:2::1", "2001:db8:aa:3::1"] {
+            assert!(at(host, 0).is_ok());
+        }
+        // ... and every further /64 of that /48 shares one quota.
+        assert!(at("2001:db8:aa:4::1", 1).is_ok());
+        assert!(at("2001:db8:aa:5::1", 1).is_ok());
+        assert_eq!(
+            at("2001:db8:aa:6::1", 1).unwrap_err().0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // A client elsewhere is still served, under its /24's quota.
+        assert!(at("203.0.113.50", 1).is_ok());
+        assert!(at("203.0.113.51", 1).is_ok());
+        assert_eq!(
+            at("203.0.113.52", 1).unwrap_err().0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert!(at("198.51.100.7", 1).is_ok());
+        let state = rate.state.lock().unwrap();
+        assert_eq!(state.entries.len(), 3);
+        assert_eq!(state.networks[0].len(), 3);
+    }
+
+    #[test]
+    fn coarser_records_take_over_when_the_network_tables_fill() {
+        let rate =
+            RateLimit::parse(&json!({"requests":1,"window_seconds":10,"max_keys":1})).unwrap();
+        let now = Instant::now();
+        let at = |ip: [u8; 4]| rate.admit_at(IpAddr::from(ip), now);
+        assert!(at([10, 0, 0, 1]).is_ok()); // own record
+        assert!(at([10, 0, 1, 1]).is_ok()); // the only /24 record
+        assert!(at([10, 0, 2, 1]).is_ok()); // the only /16 record
+        assert!(at([10, 0, 3, 1]).is_err()); // that /16 is spent
+        assert!(at([10, 1, 0, 1]).is_ok()); // everyone's record
+        assert!(at([10, 2, 0, 1]).is_err()); // which is spent too
+        // The /24 record counts its own network first.
+        assert!(at([10, 0, 1, 2]).is_err());
+    }
+
+    /// A client counted in a shared record that then gets a record of its
+    /// own (or a finer shared one) carries what it used: no second quota.
+    #[test]
+    fn moving_to_a_new_record_does_not_grant_a_second_quota() {
+        let rate =
+            RateLimit::parse(&json!({"requests":3,"window_seconds":10,"max_keys":1})).unwrap();
+        let now = Instant::now();
+        let at = |ip: [u8; 4], seconds: f64| {
+            rate.admit_at(IpAddr::from(ip), now + Duration::from_secs_f64(seconds))
+        };
+        assert!(at([192, 0, 2, 1], 0.0).is_ok());
+        // 198.51.100.9 uses its /24's whole quota while the table is full.
+        for _ in 0..3 {
+            assert!(at([198, 51, 100, 9], 1.0).is_ok());
+        }
+        assert!(at([198, 51, 100, 9], 1.0).is_err());
+        // The table's record expires; the client's own record starts with
+        // the shared history, so it waits as it would have.
+        let refused = at([198, 51, 100, 9], 10.5).unwrap_err();
+        assert_eq!(refused.0, StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            rate.state
+                .lock()
+                .unwrap()
+                .entries
+                .contains_key(&IpAddr::from([198, 51, 100, 9]))
+        );
+        assert!(at([198, 51, 100, 9], 11.3).is_ok());
+
+        // Counted in everyone's record, then in a /24 record made later.
+        let rate =
+            RateLimit::parse(&json!({"requests":2,"window_seconds":10,"max_keys":1})).unwrap();
+        let now = Instant::now();
+        let at = |ip: [u8; 4], seconds: f64| {
+            rate.admit_at(IpAddr::from(ip), now + Duration::from_secs_f64(seconds))
+        };
+        assert!(at([10, 0, 0, 1], 0.0).is_ok()); // its own record
+        assert!(at([10, 0, 1, 1], 0.0).is_ok()); // the /24 table's one record
+        assert!(at([10, 0, 2, 1], 0.0).is_ok()); // the /16 table's one record
+        assert!(at([10, 1, 0, 1], 5.0).is_ok()); // everyone's record
+        assert!(at([10, 1, 0, 1], 5.0).is_ok()); // which is now spent
+        assert!(at([10, 0, 0, 1], 6.0).is_ok()); // the table stays full
+        // By 11.3 s the network records have forgotten their requests, so
+        // 10.1.0.1 gets a /24 record, which starts from everyone's count.
+        assert!(at([10, 1, 0, 1], 11.3).is_err());
+        assert!(at([10, 1, 0, 2], 11.3).is_err());
+        assert!(rate.state.lock().unwrap().networks[0].contains_key(&IpAddr::from([10, 1, 0, 0])));
+        // Once those requests leave the span (5 s plus nine eighths of a
+        // window), the client starts afresh with its own record.
+        assert!(at([10, 1, 0, 1], 16.3).is_ok());
+        assert!(
+            rate.state
+                .lock()
+                .unwrap()
+                .entries
+                .contains_key(&IpAddr::from([10, 1, 0, 1]))
+        );
+    }
+
+    /// Whatever records a client moves between, it is never admitted more
+    /// than `requests` times in any window, and the tables stay bounded.
+    #[test]
+    fn no_client_exceeds_its_quota_in_any_window_and_memory_is_bounded() {
+        let (requests, window, max_keys) = (3, 10_000, 4);
+        let rate = RateLimit::parse(
+            &json!({"requests":requests,"window_seconds":window / 1000,"max_keys":max_keys}),
+        )
+        .unwrap();
+        let start = Instant::now();
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        let clients: Vec<IpAddr> = (0..40u8)
+            .map(|index| match index % 4 {
+                0 => IpAddr::from([10, 0, index % 3, index]),
+                1 => IpAddr::from([10, index % 2, 9, index]),
+                2 => IpAddr::from([172, 16 + index % 5, 1, 1]),
+                _ => format!("2001:db8:{:x}:{:x}::1", index % 3, index)
+                    .parse()
+                    .unwrap(),
+            })
+            .collect();
+        // Times in milliseconds, so the check below agrees with the limiter.
+        let mut admitted: HashMap<IpAddr, Vec<u64>> = HashMap::new();
+        let mut time = 0;
+        let mut used = [false; 3];
+        for _ in 0..20_000 {
+            time += next(400);
+            let client = clients[next(clients.len() as u64) as usize];
+            let result = rate.admit_at(rate_key(client), start + Duration::from_millis(time));
+            match result {
+                Ok(()) => admitted.entry(client).or_default().push(time),
+                Err((status, retry)) => {
+                    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+                    assert!((1..=12).contains(&retry), "{retry}");
+                }
+            }
+            let state = rate.state.lock().unwrap();
+            assert!(state.entries.len() <= max_keys);
+            assert!(
+                state
+                    .entries
+                    .values()
+                    .all(|entry| entry.requests.len() <= requests)
+            );
+            assert!(state.networks.iter().all(|table| table.len() <= max_keys));
+            used[0] |= !state.networks[0].is_empty();
+            used[1] |= !state.networks[1].is_empty();
+            used[2] |= state.everyone.total() > 0;
+        }
+        // Every kind of shared record took part.
+        assert_eq!(used, [true; 3]);
+        for (client, times) in admitted {
+            for (index, first) in times.iter().enumerate() {
+                let within = times[index..]
+                    .iter()
+                    .take_while(|time| **time - *first < window)
+                    .count();
+                assert!(within <= requests, "{client} at {first}: {within}");
+            }
+        }
     }
 
     #[test]
@@ -1859,6 +2351,25 @@ mod tests {
             HeaderValue::from_static("bad id with spaces"),
         );
         assert!(!request_id(&headers).to_str().unwrap().contains(' '));
+    }
+
+    #[test]
+    fn route_templates_are_counted_once_and_only_when_telemetry_labels_them() {
+        // 520 paths, each with GET and POST: 1040 entries, 520 templates.
+        let routes: Vec<String> = (0..520)
+            .flat_map(|index| [format!("/r{index}"), format!("/r{index}")])
+            .collect();
+        for config in [json!({"access_log": true}), json!({"otel": {}})] {
+            let controls = Controls::from_json(&config).unwrap();
+            controls.register_routes(&routes).unwrap();
+            let many: Vec<String> = (0..1025).map(|index| format!("/r{index}")).collect();
+            assert!(controls.register_routes(&many).is_err(), "{config}");
+        }
+        // Nothing uses the labels: any number of routes is accepted.
+        let quiet = Controls::from_json(&Value::Null).unwrap();
+        let many: Vec<String> = (0..5000).map(|index| format!("/r{index}")).collect();
+        quiet.register_routes(&many).unwrap();
+        quiet.register_routes(&["/\u{7}".to_owned()]).unwrap();
     }
 
     #[test]

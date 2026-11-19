@@ -13,7 +13,7 @@ use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::os::fd::RawFd;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTuple};
 use pyo3::{PyTraverseError, PyVisit, intern};
 
-use crate::driver::Driver;
+use crate::driver::{Driver, Pace};
 use crate::handle::{Callback, Handle, callback_context};
 use crate::poller;
 
@@ -168,6 +168,16 @@ struct Registration {
     mask: u32,
 }
 
+/// The loop's Python-visible state: everything here holds or is reached
+/// through Python objects, which `__traverse__` must visit.
+///
+/// Locked only by a thread attached to the interpreter, and never across a
+/// call into Python or the release of a Python reference (a release can run a
+/// finalizer, which can call back into the loop or start a collection). The
+/// cycle collector's `__traverse__` then always finds it free: under the GIL
+/// no other thread runs, and a free-threaded collection stops every attached
+/// thread at a point where it holds no such lock. What threads that are not
+/// attached need (`woken`, `driven`) lives outside it.
 #[derive(Default)]
 struct State {
     ready: VecDeque<Ready>,
@@ -176,29 +186,48 @@ struct State {
     seq: u64,
     io: HashMap<RawFd, Registration>,
     /// Set (under the lock) while the loop is about to block or is blocked in
-    /// the poller's wait, so `call_soon_threadsafe` knows a wake-up write is needed.
+    /// the poller's wait, so `call_soon_threadsafe` knows a wake-up is needed.
+    /// Cleared again by the first caller that decides on one, so a burst of
+    /// callbacks queued during one wait writes a single wake-up.
     polling: bool,
-    /// Descriptors marked readable from this process with `wake_reader`.
-    woken: Vec<RawFd>,
-    /// The thread running `run_driven`, whose waits are in the embedded
-    /// runtime: a callback queued from a runtime task on that thread wakes
-    /// the wait through the driver instead of the self-pipe.
-    driven: Option<std::thread::ThreadId>,
 }
 
 impl State {
     /// Whether a callback queued now needs the loop woken, and whether the
     /// driver can do it: the queueing thread is the driven loop's own, so it
     /// runs inside the runtime's wait (a Tokio task) rather than blocked in it.
-    fn wake(&self) -> Wake {
+    /// A wake-up the caller will make (through the driver, or through the
+    /// pipe when `by_pipe`) clears `polling`: later callers need not repeat it.
+    fn wake(&mut self, driven: &AtomicU64, by_pipe: bool) -> Wake {
         if !self.polling {
-            Wake::None
-        } else if self.driven.is_some() && self.driven == Some(std::thread::current().id()) {
+            return Wake::None;
+        }
+        let wake = if driven.load(Ordering::Relaxed) == thread_token() {
             Wake::Driver
         } else {
             Wake::Pipe
+        };
+        if by_pipe || wake == Wake::Driver {
+            self.polling = false;
         }
+        wake
     }
+}
+
+/// A number identifying the calling thread, never 0.
+fn thread_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    TOKEN.with(|token| {
+        let mut value = token.get();
+        if value == 0 {
+            value = NEXT.fetch_add(1, Ordering::Relaxed);
+            token.set(value);
+        }
+        value
+    })
 }
 
 #[derive(PartialEq)]
@@ -210,8 +239,22 @@ enum Wake {
 
 #[pyclass(frozen, subclass, module = "bessemer._native")]
 pub struct LoopCore {
-    /// Never held across a call into Python.
+    /// Never held across a call into Python, and only locked with the
+    /// interpreter attached (see `State`).
     state: Mutex<State>,
+    /// Descriptors marked readable from this process with `wake_reader`,
+    /// which is called by runtime tasks that are not attached to the
+    /// interpreter. Plain numbers, so `__traverse__` has nothing to visit.
+    woken: Mutex<Vec<RawFd>>,
+    /// Whether `woken` may be non-empty: set under its lock by `wake_reader`
+    /// and cleared under it once emptied, so an iteration with nothing woken
+    /// does not take the lock.
+    has_woken: AtomicBool,
+    /// The `thread_token` of the thread running `run_driven` (0: none), whose
+    /// waits are in the embedded runtime: a callback queued from a runtime
+    /// task on that thread wakes the wait through the driver instead of the
+    /// self-pipe.
+    driven: AtomicU64,
     /// -1 once the loop is closed.
     epfd: std::sync::atomic::AtomicI32,
     stopping: AtomicBool,
@@ -263,10 +306,11 @@ impl LoopCore {
             return;
         };
         {
-            let mut state = self.state.lock().unwrap();
-            if !state.woken.contains(&fd) {
-                state.woken.push(fd);
+            let mut woken = self.woken.lock().unwrap();
+            if !woken.contains(&fd) {
+                woken.push(fd);
             }
+            self.has_woken.store(true, Ordering::Release);
         }
         driver.notify();
     }
@@ -284,7 +328,20 @@ impl LoopCore {
     /// calling thread: work queued for it from here waits until the calling
     /// task yields.
     pub fn runs_here(&self) -> bool {
-        self.state.lock().unwrap().driven == Some(std::thread::current().id())
+        self.driven.load(Ordering::Relaxed) == thread_token()
+    }
+
+    /// Move the descriptors woken by `wake_reader` into `events` (see
+    /// `merge_woken`).
+    fn take_woken(&self, events: &mut [poller::Event], count: &mut usize) {
+        if !self.has_woken.load(Ordering::Acquire) {
+            return;
+        }
+        let mut woken = self.woken.lock().unwrap();
+        merge_woken(&mut woken, events, count);
+        if woken.is_empty() {
+            self.has_woken.store(false, Ordering::Relaxed);
+        }
     }
 }
 
@@ -393,9 +450,10 @@ impl LoopCore {
         slf.get().attach_traceback(py, &handle)?;
         let queued = handle.clone_ref(py);
         let wake = {
-            let mut state = slf.get().state.lock().unwrap();
+            let this = slf.get();
+            let mut state = this.state.lock().unwrap();
             state.ready.push_back(Ready::Native(queued));
-            state.wake()
+            state.wake(&this.driven, false)
         };
         // Only a Tokio task on the driven loop's thread queues while the loop
         // waits; the wait must end for the callback to run.
@@ -430,19 +488,40 @@ impl LoopCore {
                 context: callback_context(py, None)?,
             }),
         )?;
+        // Handles of a stale registration, cancelled after the lock.
+        let mut stale: [Option<Py<Handle>>; 2] = [None, None];
         let replaced = {
             let mut state = this.state.lock().unwrap();
             let reg = state.io.entry(fd).or_default();
             let old = reg.mask;
             let bit = if write { poller::WRITE } else { poller::READ };
             let new = old | bit;
-            if let Err(err) = this.sync_poller(fd, old, new) {
-                if old == 0 && reg.reader.is_none() && reg.writer.is_none() {
-                    state.io.remove(&fd);
+            match poller::update(this.epfd.load(Ordering::Relaxed), fd, old, new) {
+                Ok(()) => reg.mask = new,
+                Err(err) if old != 0 && err.raw_os_error() == Some(libc::ENOENT) => {
+                    // The map lists the descriptor but the poller does not:
+                    // it was closed with its reader or writer still
+                    // registered, and the number now belongs to someone else.
+                    // Those handles were for the old file; re-arming them
+                    // would run them for the new one. Drop them, as asyncio
+                    // drops the stale key, and register only what is asked.
+                    stale = [reg.reader.take(), reg.writer.take()];
+                    reg.mask = 0;
+                    if let Err(err) = this.sync_poller(fd, 0, bit) {
+                        state.io.remove(&fd);
+                        drop(state);
+                        Self::cancel_all(py, stale);
+                        return Err(err);
+                    }
+                    reg.mask = bit;
                 }
-                return Err(err);
+                Err(err) => {
+                    if old == 0 && reg.reader.is_none() && reg.writer.is_none() {
+                        state.io.remove(&fd);
+                    }
+                    return Err(err.into());
+                }
             }
-            reg.mask = new;
             let slot = if write {
                 &mut reg.writer
             } else {
@@ -450,11 +529,49 @@ impl LoopCore {
             };
             slot.replace(handle.clone_ref(py))
         };
+        Self::cancel_all(py, stale);
         // asyncio cancels a replaced handle.
         if let Some(old) = replaced {
             Handle::cancel_handle(old.bind(py));
         }
         Ok(handle)
+    }
+
+    fn cancel_all(py: Python<'_>, handles: [Option<Py<Handle>>; 2]) {
+        for handle in handles.into_iter().flatten() {
+            Handle::cancel_handle(handle.bind(py));
+        }
+    }
+
+    /// Unregister the directions in `bits` of `fd`, whose handles were found
+    /// cancelled while still registered (a handle cancelled directly rather
+    /// than through `remove_reader`): asyncio removes such a reader or writer
+    /// when its event arrives, rather than polling for it again and again.
+    /// The handles go to `released`, to be dropped after the lock.
+    #[cold]
+    fn drop_cancelled(
+        &self,
+        state: &mut State,
+        fd: RawFd,
+        bits: u32,
+        released: &mut Vec<Py<Handle>>,
+    ) {
+        let Some(reg) = state.io.get_mut(&fd) else {
+            return;
+        };
+        if bits & poller::READ != 0 {
+            released.extend(reg.reader.take());
+        }
+        if bits & poller::WRITE != 0 {
+            released.extend(reg.writer.take());
+        }
+        let old = reg.mask;
+        let new = old & !bits;
+        reg.mask = new;
+        if new == 0 {
+            state.io.remove(&fd);
+        }
+        let _ = self.sync_poller(fd, old, new);
     }
 
     pub(crate) fn remove_io(slf: &Bound<'_, Self>, fd: RawFd, write: bool) -> PyResult<bool> {
@@ -501,7 +618,7 @@ impl LoopCore {
         let driver = this.driver().expect("driver");
         let owned: Py<Self> = slf.clone().unbind();
         let first = this.next_timeout(py);
-        this.state.lock().unwrap().driven = Some(std::thread::current().id());
+        this.driven.store(thread_token(), Ordering::Relaxed);
         // The body runs as a spawned task, not as the `block_on` future. A
         // task that wakes the `block_on` future (a connection handing a
         // request to Python) makes the scheduler poll the I/O driver once more
@@ -540,7 +657,7 @@ impl LoopCore {
                 .await
             })
         });
-        this.state.lock().unwrap().driven = None;
+        this.driven.store(0, Ordering::Relaxed);
         result
     }
 
@@ -558,17 +675,22 @@ impl LoopCore {
                 // are level-triggered: a reader that leaves data unread, or a
                 // drain that filled the buffer, produces no new edge. So the
                 // loop polls again, without blocking, until a poll is empty.
-                let mut pending = false;
+                // Set at the start too: a descriptor left ready when the last
+                // run stopped made its edge then, and makes no new one now.
+                let mut pending = true;
                 // One buffer for the whole run: zeroing it per iteration cost
                 // about 3k instructions a request.
                 let mut events = Events([poller::EMPTY; MAX_EVENTS]);
+                // Bounds the time between the runtime's I/O driver polls while
+                // the ready queue stays non-empty (see `Driver::wait_paced`).
+                let mut pace = Pace::default();
                 loop {
                     let wait = if pending {
                         Some(Duration::ZERO)
                     } else {
                         timeout
                     };
-                    let readable = driver.wait_async(wait).await || pending;
+                    let readable = driver.wait_paced(wait, &mut pace).await || pending;
                     let step = Python::attach(|py| -> PyResult<Option<Option<Duration>>> {
                         let slf = owned.bind(py);
                         let this = slf.get();
@@ -580,7 +702,7 @@ impl LoopCore {
                         };
                         let mut n = polled(py, n)?;
                         pending = n > 0;
-                        merge_woken(&mut this.state.lock().unwrap().woken, &mut events.0, &mut n);
+                        this.take_woken(&mut events.0, &mut n);
                         Self::dispatch(slf, &events.0[..n])?;
                         if this.stopping.load(Ordering::Relaxed) {
                             return Ok(None);
@@ -600,6 +722,9 @@ impl LoopCore {
     /// The next wait, after dropping cancelled timers. None means no limit.
     fn next_timeout(&self, py: Python<'_>) -> Option<Duration> {
         let this = self;
+        // Cancelled timers leave the heap here but are released after the
+        // lock: the last reference to a handle can run a finalizer.
+        let mut dropped: Vec<Timer> = Vec::new();
         {
             let mut state = this.state.lock().unwrap();
             let scheduled = state.timers.len();
@@ -610,6 +735,7 @@ impl LoopCore {
                 for timer in timers.into_vec() {
                     if timer.handle.get().is_cancelled() {
                         timer.handle.get().unschedule(py);
+                        dropped.push(timer);
                     } else {
                         kept.push(timer);
                     }
@@ -624,10 +750,11 @@ impl LoopCore {
                     let timer = state.timers.pop().unwrap();
                     timer.handle.get().unschedule(py);
                     this.timer_cancelled.fetch_sub(1, Ordering::Relaxed);
+                    dropped.push(timer);
                 }
             }
             let timeout = if !state.ready.is_empty()
-                || !state.woken.is_empty()
+                || this.has_woken.load(Ordering::Acquire)
                 || this.stopping.load(Ordering::Relaxed)
             {
                 Some(Duration::ZERO)
@@ -638,6 +765,8 @@ impl LoopCore {
                 None
             };
             state.polling = timeout != Some(Duration::ZERO);
+            drop(state);
+            drop(dropped);
             timeout
         }
     }
@@ -659,8 +788,17 @@ impl LoopCore {
             poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, timeout_ms)
         };
         let n = if let Some(driver) = this.driver() {
-            py.detach(|| driver.wait(timeout));
-            unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) }
+            // Poll first: a descriptor that stayed ready since the last poll
+            // makes no new edge for the runtime's wait (see `drive`).
+            let ready = unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) };
+            if ready != 0 {
+                // Still run the runtime's ready tasks once.
+                py.detach(|| driver.wait(Some(Duration::ZERO)));
+                ready
+            } else {
+                py.detach(|| driver.wait(timeout));
+                unsafe { poller::wait(epfd, ptr as *mut poller::Event, MAX_EVENTS, 0) }
+            }
         } else if timeout_ms == 0 {
             poll()
         } else {
@@ -677,6 +815,8 @@ impl LoopCore {
     fn dispatch(slf: &Bound<'_, Self>, events: &[poller::Event]) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
+        // Cancelled handles unregistered below, released after the lock.
+        let mut released: Vec<Py<Handle>> = Vec::new();
         let mut batch = {
             let mut state = this.state.lock().unwrap();
             state.polling = false;
@@ -688,20 +828,30 @@ impl LoopCore {
                 // With the selectors' semantics: see `poller::readable` and
                 // `poller::writable`.
                 let mut wake: [Option<Py<Handle>>; 2] = [None, None];
+                let mut cancelled = 0;
                 if poller::readable(event)
                     && let Some(h) = &reg.reader
-                    && !h.get().is_cancelled()
                 {
-                    wake[0] = Some(h.clone_ref(py));
+                    if h.get().is_cancelled() {
+                        cancelled |= poller::READ;
+                    } else {
+                        wake[0] = Some(h.clone_ref(py));
+                    }
                 }
                 if poller::writable(event)
                     && let Some(h) = &reg.writer
-                    && !h.get().is_cancelled()
                 {
-                    wake[1] = Some(h.clone_ref(py));
+                    if h.get().is_cancelled() {
+                        cancelled |= poller::WRITE;
+                    } else {
+                        wake[1] = Some(h.clone_ref(py));
+                    }
                 }
                 for h in wake.into_iter().flatten() {
                     state.ready.push_back(Ready::Native(h));
+                }
+                if cancelled != 0 {
+                    this.drop_cancelled(&mut state, fd, cancelled, &mut released);
                 }
             }
 
@@ -720,6 +870,7 @@ impl LoopCore {
             std::mem::swap(ready, ready_batch);
             std::mem::take(ready_batch)
         };
+        drop(released);
 
         let as_any = slf.as_any();
         let result = (|| -> PyResult<()> {
@@ -835,6 +986,9 @@ impl LoopCore {
         let epfd = poller::create()?;
         Ok(LoopCore {
             state: Mutex::new(State::default()),
+            woken: Mutex::new(Vec::new()),
+            has_woken: AtomicBool::new(false),
+            driven: AtomicU64::new(0),
             epfd: std::sync::atomic::AtomicI32::new(epfd),
             stopping: AtomicBool::new(false),
             running: AtomicBool::new(false),
@@ -904,7 +1058,7 @@ impl LoopCore {
         let wake = {
             let mut state = this.state.lock().unwrap();
             state.ready.push_back(Ready::Native(handle.clone_ref(py)));
-            state.wake()
+            state.wake(&this.driven, true)
         };
         // Only a loop blocked in the poller needs the pipe written; one that is
         // running callbacks sees the queue on its next iteration. A Tokio task
@@ -1169,9 +1323,14 @@ impl LoopCore {
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        let Ok(state) = self.state.try_lock() else {
-            return Ok(());
-        };
+        // Always visited: a collection whose passes saw different contents
+        // would take live objects reachable only through the loop for
+        // garbage. The lock is free here (see `State`); a poisoned one still
+        // holds consistent references.
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for item in &state.ready {
             match item {
                 Ready::Native(h) => visit.call(h)?,
@@ -1242,6 +1401,93 @@ impl LoopCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A loop core built without the interpreter, with an embedded runtime.
+    fn bare_core() -> LoopCore {
+        let epfd = poller::create().unwrap();
+        let driver = Driver::new(epfd).unwrap();
+        LoopCore {
+            state: Mutex::new(State::default()),
+            woken: Mutex::new(Vec::new()),
+            has_woken: AtomicBool::new(false),
+            driven: AtomicU64::new(0),
+            epfd: std::sync::atomic::AtomicI32::new(epfd),
+            stopping: AtomicBool::new(false),
+            running: AtomicBool::new(false),
+            wakeup_fd: std::sync::atomic::AtomicI32::new(-1),
+            closed: AtomicBool::new(false),
+            debug: AtomicBool::new(false),
+            timer_cancelled: AtomicUsize::new(0),
+            driver: Mutex::new(Some(std::sync::Arc::new(driver))),
+        }
+    }
+
+    /// `wake_reader` and `runs_here` are called by runtime tasks that are
+    /// not attached to the interpreter. Were they to lock `state`, a cycle
+    /// collection could find it locked in one pass and free in the other;
+    /// `__traverse__` would then report different references in its two
+    /// passes, and objects reachable only through the loop would be taken
+    /// for garbage. So neither may wait for `state`: here it is held for the
+    /// whole call, and both must still return.
+    #[test]
+    fn calls_from_detached_threads_never_take_the_state_lock() {
+        let core = std::sync::Arc::new(bare_core());
+        let held = core.state.lock().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let caller = {
+            let core = core.clone();
+            std::thread::spawn(move || {
+                core.wake_reader(7);
+                let here = core.runs_here();
+                done.send(here).unwrap();
+            })
+        };
+        let here = finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("wake_reader or runs_here waited for the state lock");
+        assert!(!here);
+        drop(held);
+        caller.join().unwrap();
+        // The woken descriptor is delivered to the next iteration.
+        let mut events = [poller::EMPTY; 4];
+        let mut count = 0;
+        core.take_woken(&mut events, &mut count);
+        assert_eq!(readable(&events[..count]), [7]);
+        assert!(!core.has_woken.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn runs_here_is_true_only_on_the_driven_thread() {
+        let core = std::sync::Arc::new(bare_core());
+        assert!(!core.runs_here());
+        core.driven.store(thread_token(), Ordering::Relaxed);
+        assert!(core.runs_here());
+        let other = core.clone();
+        assert!(
+            !std::thread::spawn(move || other.runs_here())
+                .join()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn one_wake_up_is_written_for_a_burst_of_threadsafe_callbacks() {
+        let driven = AtomicU64::new(0);
+        let mut state = State {
+            polling: true,
+            ..State::default()
+        };
+        // `call_soon` from another thread does not write, so it leaves the
+        // wake-up to the next caller that does.
+        assert!(state.wake(&driven, false) == Wake::Pipe);
+        assert!(state.wake(&driven, true) == Wake::Pipe);
+        assert!(state.wake(&driven, true) == Wake::None);
+        // From a runtime task on the driven loop's own thread: the driver.
+        state.polling = true;
+        driven.store(thread_token(), Ordering::Relaxed);
+        assert!(state.wake(&driven, false) == Wake::Driver);
+        assert!(state.wake(&driven, true) == Wake::None);
+    }
 
     fn readable(events: &[poller::Event]) -> Vec<RawFd> {
         events

@@ -1009,11 +1009,15 @@ class AdversarialControlsTests(unittest.TestCase):
             )
         )
         try:
+            # A full table is not a refusal: a client without a record of
+            # its own shares its /24's quota (one request here) instead.
             cases = (
                 ("198.51.100.1, 203.0.113.8", 200),
                 ("198.51.100.2, 203.0.113.8", 429),
                 ("203.0.113.9", 200),
-                ("203.0.113.10", 503),
+                ("203.0.113.10", 200),
+                ("203.0.113.11", 429),
+                ("198.51.100.3", 200),
             )
             for chain, expected in cases:
                 with self.subTest(chain=chain):

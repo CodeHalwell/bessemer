@@ -299,6 +299,80 @@ class MountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate or ambiguous route"):
             parent.build()
 
+    def test_native_middleware_after_mount_is_refused(self):
+        from bessemer.middleware import (
+            CORSMiddleware,
+            GZipMiddleware,
+            TrustedHostMiddleware,
+        )
+
+        cases = (
+            (
+                TrustedHostMiddleware,
+                {"allowed_hosts": ["api.good.test"]},
+                "allowed_hosts",
+            ),
+            (CORSMiddleware, {"allow_origins": ["https://a.test"]}, "cors"),
+            (GZipMiddleware, {}, "compression"),
+        )
+        for cls, options, setting in cases:
+            with self.subTest(cls=cls.__name__):
+                parent, child, grandchild = build()
+                for sub in (child, grandchild):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        rf"mounted app cannot set server-wide options \({setting}\);"
+                        " set them on the outermost app",
+                    ):
+                        sub.add_middleware(cls, **options)
+                parent.build()
+
+    def test_server_wide_settings_changed_after_mount_fail_at_build(self):
+        for depth in ("child", "grandchild"):
+            with self.subTest(depth=depth):
+                parent, child, grandchild = build()
+                {"child": child, "grandchild": grandchild}[depth]._settings[
+                    "allowed_hosts"
+                ] = ["api.good.test"]
+                with self.assertRaisesRegex(
+                    ValueError, r"mounted at /v1.*allowed_hosts.*outermost app"
+                ):
+                    parent.build()
+        parent, child, _ = build()
+        child._asgi_middleware.append((object, (), {}))
+        with self.assertRaisesRegex(ValueError, "cannot have ASGI middleware"):
+            parent.build()
+
+    def test_supported_orders_still_work(self):
+        from bessemer.middleware import TrustedHostMiddleware
+
+        parent, _, _ = build()
+        parent.add_middleware(TrustedHostMiddleware, allowed_hosts=["testserver"])
+        parent.build()
+        with TestClient(parent) as client:
+            self.assertEqual(client.get("/v1/g/deep").json(), {"app": "grandchild"})
+        # The in-process client does not run the native host check; the
+        # outermost app's setting is what the server exports and enforces.
+        self.assertEqual(parent._export_settings()["allowed_hosts"], ["testserver"])
+        sub = App()
+        sub.add_middleware(TrustedHostMiddleware, allowed_hosts=["x.test"])
+        with self.assertRaisesRegex(ValueError, "server-wide options"):
+            App().mount("/s", sub)
+
+    def test_http_middleware_on_a_mounted_app_still_runs(self):
+        from bessemer.middleware import BaseHTTPMiddleware
+
+        class Mark(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                response = await call_next(request)
+                response.headers["x-mark"] = "child"
+                return response
+
+        parent, child, _ = build()
+        child.add_middleware(Mark)
+        with TestClient(parent) as client:
+            self.assertEqual(client.get("/v1/items/7").headers["x-mark"], "child")
+
 
 if __name__ == "__main__":
     unittest.main()

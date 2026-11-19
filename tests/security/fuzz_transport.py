@@ -50,8 +50,12 @@ async def raw_json(request: Request):
     return await request.json()
 
 @app.get("/cookie")
-async def cookie(request: Request, session: str = Cookie()):
-    return {"bound": session, "request": request.cookies["session"]}
+async def cookie(request: Request, session: str | None = Cookie(default=None)):
+    return {
+        "bound": session,
+        "request": request.cookies.get("session"),
+        "all": dict(request.cookies),
+    }
 
 @app.get("/header")
 async def header(request: Request, value: str = Header(alias="X-Value")):
@@ -95,10 +99,13 @@ def digest(path):
 
 def package_provenance(package, wheel):
     root = Path(package.__file__).parent
+    # Every file the wheel installs under bessemer/ (sources, py.typed, the
+    # native extension whatever its suffix: .so, .pyd or .dylib). Only the
+    # interpreter's own bytecode caches are not part of the wheel.
     files = {
-        str(path.relative_to(root)): digest(path)
+        path.relative_to(root).as_posix(): digest(path)
         for path in root.rglob("*")
-        if path.is_file() and path.suffix in {".py", ".so"}
+        if path.is_file() and "__pycache__" not in path.relative_to(root).parts
     }
     if wheel is not None:
         with zipfile.ZipFile(wheel) as archive:
@@ -359,11 +366,28 @@ def strategies():
             return "example.test", 400
         return allowed + "@evil.test", 400
 
-    cookie_alphabet = "".join(
-        chr(value) for value in range(33, 127) if value not in (34, 44, 59, 92)
+    # Cookie headers are a list of header lines, each a list of pairs. A pair's
+    # name and value come from a deliberately loose alphabet (every printable
+    # ASCII character and tab, quote, comma, semicolon and backslash included)
+    # so the oracle, not the generator, decides what is well formed.
+    cookie_text = st.text(
+        "".join(chr(value) for value in range(32, 127)) + "\t", max_size=8
     )
-    cookies = st.tuples(
-        st.text(cookie_alphabet, max_size=32), st.booleans(), st.booleans()
+    cookie_names = st.one_of(
+        st.sampled_from(["session", "session", "other", "", "bad name", "se;ss"]),
+        cookie_text,
+    )
+    cookie_values = st.one_of(
+        st.sampled_from(["", "a", "v1", '"q"', '"a;b"', '"', 'a"b', "a b", "a,b"]),
+        cookie_text,
+        cookie_text.map(lambda value: f'"{value}"'),
+    )
+    cookie_pairs = st.one_of(
+        st.tuples(cookie_names, cookie_values).map(lambda pair: "=".join(pair)),
+        st.sampled_from(["flag", "session", " session=x ", "session=x=y"]),
+    )
+    cookies = st.lists(
+        st.lists(cookie_pairs, min_size=1, max_size=4), min_size=1, max_size=3
     )
     header_values = st.text(
         "".join(chr(value) for value in range(32, 127)) + "\t", max_size=40
@@ -539,16 +563,48 @@ def campaign(arguments):
                 )
 
             def cookie_check(case):
-                value, quoted, duplicate = case
-                cookie = f'session="{value}"' if quoted else "session=" + value
-                if duplicate:
-                    cookie += "; session=duplicate"
-                status, _, body = reference.raw("/cookie", headers=[("Cookie", cookie)])
-                if duplicate:
-                    assert status == 400, "duplicate cookie accepted"
-                else:
-                    assert status == 200, f"valid cookie returned HTTP{status}"
-                    equivalent(json.loads(body), {"bound": value, "request": value})
+                # Independent oracle for src/cookies.rs: RFC 6265 cookie-octets.
+                # A pair that is not well formed is left out, the first cookie
+                # with a name wins, and a request is never refused for its
+                # cookies.
+                def well_formed(pair):
+                    name, separator, value = pair.strip(" \t").partition("=")
+                    if not separator or not name:
+                        return None
+                    if not all(c in TOKEN_CHARACTERS for c in name):
+                        return None
+                    if value.startswith('"'):
+                        if len(value) < 2 or not value.endswith('"'):
+                            return None
+                        value = value[1:-1]
+                    if not all(
+                        c == "!"
+                        or "#" <= c <= "+"
+                        or "-" <= c <= ":"
+                        or "<" <= c <= "["
+                        or "]" <= c <= "~"
+                        for c in value
+                    ):
+                        return None
+                    return name, value
+
+                headers = [("Cookie", "; ".join(line)) for line in case]
+                expected = {}
+                for _, header_value in headers:
+                    for pair in header_value.split(";"):
+                        parsed = well_formed(pair)
+                        if parsed is not None:
+                            expected.setdefault(*parsed)
+                status, _, body = reference.raw("/cookie", headers=headers)
+                assert status == 200, f"cookies refused the request: HTTP{status}"
+                equivalent(
+                    json.loads(body),
+                    {
+                        "bound": expected.get("session"),
+                        "request": expected.get("session"),
+                        "all": expected,
+                    },
+                )
 
             def request_header_check(case):
                 value, duplicate = case

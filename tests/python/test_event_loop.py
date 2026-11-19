@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import errno
 import gc
 import http.client
 import json
@@ -13,6 +14,7 @@ import re
 import select
 import signal
 import socket
+import sys
 import threading
 import time
 import unittest
@@ -260,6 +262,38 @@ class SchedulingTests(LoopTestCase):
         loop.run_until_complete(main())
         self.assertEqual(b"".join(received), b"abc")
 
+    def test_embedded_runtime_sees_a_descriptor_left_ready_by_the_last_run(
+        self,
+    ) -> None:
+        # The runtime watches the loop's poller edge-triggered. A descriptor
+        # still readable when one run stops made its edge during that run;
+        # the next run must find it without waiting for another event.
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.setblocking(False)
+        calls = []
+
+        def on_readable():
+            # Reads nothing, so the socket stays readable, and stops the run.
+            calls.append(time.monotonic())
+            loop.stop()
+
+        loop.add_reader(reader.fileno(), on_readable)
+        writer.send(b"x")
+        loop.run_forever()
+        self.assertEqual(len(calls), 1)
+        started = time.monotonic()
+        guard = loop.call_later(30, loop.stop)
+        loop.run_forever()
+        guard.cancel()
+        loop.remove_reader(reader.fileno())
+        self.assertEqual(len(calls), 2)
+        self.assertLess(calls[1] - started, 10)
+
     def test_embedded_runtime_serves_1000_sequential_requests_without_a_stall(
         self,
     ) -> None:
@@ -331,6 +365,47 @@ class SchedulingTests(LoopTestCase):
             await server.wait_closed()
 
         loop.run_until_complete(main())
+
+    def test_embedded_runtime_runs_a_reader_while_a_task_yields_with_sleep_0(
+        self,
+    ) -> None:
+        # A task that keeps the ready queue non-empty must not hold off I/O:
+        # the runtime's driver, which notices the loop's poller descriptor,
+        # used to be polled only every 61 scheduler ticks (about 44 of these
+        # iterations; the loop without a runtime and asyncio take one).
+        loop = bessemer_loop.new_event_loop()
+        self.addCleanup(loop.close)
+        loop._core_enable_runtime()
+        reader, writer = socket.socketpair()
+        self.addCleanup(reader.close)
+        self.addCleanup(writer.close)
+        reader.setblocking(False)
+        state = {"iteration": 0, "sent": None, "seen": None}
+
+        def on_readable():
+            reader.recv(1)
+            state["seen"] = state["iteration"]
+            loop.remove_reader(reader.fileno())
+
+        async def cooperate():
+            while state["seen"] is None and state["iteration"] < 1000:
+                # About a millisecond of work between yields; a slower
+                # machine makes each iteration longer, never shorter.
+                end = time.perf_counter() + 0.001
+                while time.perf_counter() < end:
+                    pass
+                state["iteration"] += 1
+                if state["iteration"] == 20:
+                    writer.send(b"x")
+                    state["sent"] = state["iteration"]
+                await asyncio.sleep(0)
+
+        loop.add_reader(reader.fileno(), on_readable)
+        loop.run_until_complete(cooperate())
+        self.assertIsNotNone(state["seen"], state)
+        # Expected within one or two; the bound leaves room without
+        # admitting the old behaviour.
+        self.assertLessEqual(state["seen"] - state["sent"], 5, state)
 
     def test_debug_mode_checks_callbacks(self) -> None:
         self.loop.set_debug(True)
@@ -669,6 +744,146 @@ class IoTests(LoopTestCase):
         self.assertFalse(second.cancelled())
         self.assertTrue(self.loop._remove_reader(a.fileno()))
 
+    def test_a_cancelled_reader_handle_is_unregistered_when_its_event_arrives(
+        self,
+    ) -> None:
+        # asyncio removes a reader whose handle was cancelled directly when
+        # its descriptor is next reported, instead of polling it for ever.
+        a, b = self.socketpair()
+        calls = []
+        handle = self.loop._add_reader(b.fileno(), lambda: calls.append(1))
+        handle.cancel()
+        a.send(b"unread")
+        for _ in range(3):
+            self.loop.run_until_complete(asyncio.sleep(0.01))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
+
+    def reused(self, closed: int):
+        """A connected pair whose first socket has the closed number."""
+        c, d = self.socketpair()
+        if c.fileno() != closed:
+            self.skipTest("the descriptor number was not reused")
+        return c, d
+
+    def test_a_reader_left_on_a_closed_socket_is_not_armed_for_the_next_owner(
+        self,
+    ) -> None:
+        a, _peer = self.socketpair()
+        stale = []
+        old = self.loop._add_reader(a.fileno(), lambda: stale.append(1))
+        number = a.fileno()
+        a.close()  # without remove_reader
+        b, b_peer = self.reused(number)
+        writes = []
+
+        def writable():
+            writes.append(1)
+            self.loop.remove_writer(b)
+
+        # The new owner registers the other direction; the old reader must
+        # not come back with it.
+        self.loop.add_writer(b, writable)
+        b_peer.send(b"data for b")
+        for _ in range(3):
+            self.loop.run_until_complete(asyncio.sleep(0.02))
+        self.assertEqual(stale, [])
+        self.assertEqual(writes, [1])
+        self.assertTrue(old.cancelled())
+        self.assertEqual(b.recv(100), b"data for b")
+        self.assertEqual(self.loop._bessemer_io_state(b.fileno()), (False, False))
+
+    def test_a_pending_sock_sendall_on_a_closed_socket_does_not_send_to_the_next_owner(
+        self,
+    ) -> None:
+        a, _peer = self.socketpair()
+        a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+
+        async def main():
+            sending = asyncio.ensure_future(self.loop.sock_sendall(a, b"A" * (4 << 20)))
+            await asyncio.sleep(0.01)
+            self.assertFalse(sending.done())
+            number = a.fileno()
+            a.close()
+            b, b_peer = self.reused(number)
+            self.loop.add_reader(b, lambda: None)
+            await asyncio.sleep(0.05)
+            self.loop.remove_reader(b)
+            try:
+                leaked = b_peer.recv(65536)
+            except BlockingIOError:
+                leaked = b""
+            sending.cancel()
+            return leaked
+
+        self.assertEqual(self.run_soon(main()), b"")
+
+    async def closed_while_pending(self, pending: asyncio.Future) -> None:
+        """What a pending socket operation does once its socket is closed."""
+        if sys.platform == "linux":
+            # epoll and io_uring go on reporting the file a duplicate keeps
+            # open, under the number the next socket now has: the operation
+            # must fail as the call on a closed socket does.
+            with self.assertRaises(OSError) as raised:
+                await asyncio.wait_for(pending, 5)
+            self.assertEqual(raised.exception.errno, errno.EBADF)
+            return
+        # kqueue drops a descriptor's filters when the descriptor is closed,
+        # whatever else keeps the file open, so nothing wakes the operation
+        # (as on asyncio's own loop). It must not have acted for the number's
+        # next owner, which the callers check.
+        _done, waiting = await asyncio.wait({pending}, timeout=0.5)
+        self.assertEqual(waiting, {pending})
+        pending.cancel()
+
+    def test_a_pending_sock_recv_fails_once_its_socket_is_closed(self) -> None:
+        # A duplicate keeps the closed socket's file open while the next
+        # socket takes its number. The pending receive must fail as recv on a
+        # closed socket does, or never run: not read the new owner's data.
+        a, a_peer = self.socketpair()
+
+        async def main():
+            receiving = asyncio.ensure_future(self.loop.sock_recv(a, 100))
+            await asyncio.sleep(0.01)
+            duplicate = os.dup(a.fileno())
+            self.addCleanup(os.close, duplicate)
+            number = a.fileno()
+            a.close()
+            b, b_peer = self.reused(number)
+            b_peer.send(b"SECRET-FOR-B")
+            a_peer.send(b"for the closed socket")
+            await self.closed_while_pending(receiving)
+            return await asyncio.wait_for(self.loop.sock_recv(b, 100), 5)
+
+        self.assertEqual(self.run_soon(main()), b"SECRET-FOR-B")
+
+    def test_a_pending_sock_sendall_fails_once_its_socket_is_closed(self) -> None:
+        a, a_peer = self.socketpair()
+        a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+
+        async def main():
+            sending = asyncio.ensure_future(self.loop.sock_sendall(a, b"A" * (4 << 20)))
+            await asyncio.sleep(0.01)
+            duplicate = os.dup(a.fileno())
+            self.addCleanup(os.close, duplicate)
+            number = a.fileno()
+            a.close()
+            _b, b_peer = self.reused(number)
+            # Room on the old file, which a poller that still reports it
+            # shows as writable under the number b now has.
+            while True:
+                try:
+                    a_peer.recv(1 << 20)
+                except BlockingIOError:
+                    break
+            await self.closed_while_pending(sending)
+            try:
+                return b_peer.recv(65536)
+            except BlockingIOError:
+                return b""
+
+        self.assertEqual(self.run_soon(main()), b"")
+
     def test_sock_recv_and_sendall(self) -> None:
         a, b = self.socketpair()
         payload = os.urandom(4 * 1024 * 1024)
@@ -936,6 +1151,32 @@ class ServerTests(unittest.TestCase):
         with event_loop_env.shipped_default(), TestClient(app) as client:
             self.assertEqual(client.get("/echo/e").json(), {"value": "e"})
             self.assertEqual(runtime_threads(), before)
+
+        if getattr(sys, "_is_gil_enabled", lambda: True)():
+            # With a sync handler the default serves from the server's own
+            # threads, beside Bessemer's loop, so no thread that serves
+            # connections waits for the GIL a handler thread holds.
+            mixed = App()
+            seen = {}
+
+            @mixed.get("/sync")
+            def sync_route():
+                return {}
+
+            @mixed.get("/where")
+            async def where():
+                seen["loop"] = type(asyncio.get_running_loop())
+                return {}
+
+            with event_loop_env.shipped_default(), TestClient(mixed) as client:
+                self.assertEqual(client.get("/sync").status_code, 200)
+                self.assertEqual(client.get("/where").status_code, 200)
+                self.assertIs(seen["loop"], bessemer_loop.Loop)
+                self.assertGreater(runtime_threads(), before)
+            # Naming the loop keeps it all on the loop's thread.
+            with TestClient(mixed, server_options=options) as client:
+                self.assertEqual(client.get("/sync").status_code, 200)
+                self.assertEqual(runtime_threads(), before)
         # Asyncio serves from a separate runtime with its own threads.
         with TestClient(app, server_options={"event_loop": "asyncio"}) as client:
             self.assertEqual(client.get("/echo/d").json(), {"value": "d"})
@@ -1087,6 +1328,113 @@ async def json_route():
         self.assertTrue(closed, "the flood was never cut off")
         self.assertGreater(waited, 0.8)
         self.assertLess(waited, 2.5)
+
+
+class GilHeldBySyncHandlerTests(unittest.TestCase):
+    """Native routes while a ``def`` handler holds the GIL in one C call.
+
+    On the single-thread layout the thread that serves connections takes the
+    GIL for every loop callback, so nothing is accepted, read or written until
+    the call returns. With the default ``auto``, an application with a sync
+    handler serves connections on the server's own I/O threads instead.
+    """
+
+    APPLICATION = """
+from bessemer import App
+
+app = App(openapi_url=None)
+app.health("/healthz")
+
+@app.get("/hold")
+def hold(n: int):
+    # One C call: the GIL is not released until it returns.
+    return {"sum": sum(range(n))}
+"""
+
+    def _server(self, event_loop: str):
+        from test_native_integration import Server
+
+        server = Server(
+            application=self.APPLICATION,
+            environment={"BESSEMER_EVENT_LOOP": event_loop},
+            extra_args=("--max-in-flight", "8", "--request-timeout", "30"),
+        )
+        self.addCleanup(server.close)
+        return server
+
+    def _layout_line(self, server) -> str:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            server.log.seek(0)
+            for line in server.log.read().splitlines():
+                if line.startswith("Bessemer worker "):
+                    return line
+            time.sleep(0.05)
+        self.fail("the worker logged no layout line")
+
+    def _health_during_hold(self, server, n: int) -> tuple[float, list[float]]:
+        """How long the hold took, and native /healthz times during it."""
+        held: list[float] = []
+
+        def hold() -> None:
+            started = time.monotonic()
+            status, _, _ = server.request("GET", f"/hold?n={n}")
+            self.assertEqual(status, 200)
+            held.append(time.monotonic() - started)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        time.sleep(0.1)
+        health = []
+        while thread.is_alive():
+            started = time.monotonic()
+            status, _, _ = server.request("GET", "/healthz")
+            health.append(time.monotonic() - started)
+            self.assertEqual(status, 200)
+        thread.join()
+        return held[0], health
+
+    def test_default_serves_native_health_while_a_handler_holds_the_gil(self) -> None:
+        server = self._server("auto")
+        if not getattr(sys, "_is_gil_enabled", lambda: True)():
+            # Nothing waits for a GIL, so the loop thread keeps serving.
+            self.assertIn(
+                "connections=loop-thread (GIL disabled)", self._layout_line(server)
+            )
+            return
+        self.assertIn(
+            "event_loop=bessemer loops=1 connections=io-threads "
+            "(sync handler GET /hold)",
+            self._layout_line(server),
+        )
+        # Size the call to about a second on this machine.
+        n = 2_000_000
+        while True:
+            started = time.monotonic()
+            server.request("GET", f"/hold?n={n}")
+            if time.monotonic() - started > 0.1 or n > 2_000_000_000:
+                break
+            n *= 4
+        n = int(n / max(time.monotonic() - started, 0.01))
+        held, health = self._health_during_hold(server, n)
+        if held < 0.5:
+            self.skipTest(f"the call held the GIL for only {held:.2f} s")
+        self.assertTrue(health, "no health request was made during the hold")
+        # The I/O threads answer while the handler thread holds the GIL. On the
+        # loop-thread layout the worst wait is most of the hold.
+        self.assertLess(max(health), 0.25, f"hold {held:.2f} s")
+
+    def test_explicit_bessemer_keeps_the_loop_thread(self) -> None:
+        # The way to get the single-thread layout back for such an
+        # application. Its native routes wait for the GIL during the hold;
+        # that wait is the documented trade, so no time is asserted here.
+        server = self._server("bessemer")
+        self.assertIn(
+            "connections=loop-thread (event_loop=bessemer)",
+            self._layout_line(server),
+        )
+        self.assertEqual(server.request("GET", "/hold?n=1000")[0], 200)
+        self.assertEqual(server.request("GET", "/healthz")[0], 200)
 
 
 class BurstAdmissionOnTheRustLoopTests(unittest.TestCase):

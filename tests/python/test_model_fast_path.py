@@ -837,6 +837,62 @@ class ParseTests(unittest.TestCase):
                         self.native._parse_model(plan, json.dumps(missing).encode())
                     )
 
+    def test_wide_models_find_keys_in_any_order_like_pydantic(self):
+        # Plans past a small width look keys up through an index built once;
+        # any order, unknown keys and extra="forbid" give Pydantic's result.
+        from bessemer._model_plan import model_plan
+        from pydantic import create_model
+
+        rng = random.Random(48)
+        for count in (16, 17, 64, 256):
+            for forbid in (False, True):
+                model = create_model(
+                    f"Wide{count}{forbid}",
+                    __config__=ConfigDict(extra="forbid" if forbid else "ignore"),
+                    **{f"field_{index}": (int, -index) for index in range(count)},
+                )
+                plan = model_plan(model)
+                self.assertIsNotNone(plan)
+                names = [f"field_{index}" for index in range(count)]
+                for order in (names, names[::-1], rng.sample(names, count // 2)):
+                    for extra in ((), ("zield_0",)):
+                        body = {name: index for index, name in enumerate(order)}
+                        body.update(dict.fromkeys(extra, 1))
+                        data = json.dumps(body).encode()
+                        with self.subTest(count=count, forbid=forbid, extra=extra):
+                            parsed = self.native._parse_model(plan, data)
+                            if forbid and extra:
+                                self.assertIsNone(parsed)
+                                self.assertIsNone(self.native._build_model(plan, data))
+                                continue
+                            expected = model.model_validate_json(data)
+                            _same(self, parsed, expected)
+                            _same(self, self.native._build_model(plan, data), expected)
+
+    def test_classes_with_inline_values_get_a_consistent_dict(self):
+        # A plan for a class without Pydantic's slots (only reachable through
+        # the private plan constructor) once left CPython 3.13's inline
+        # values beside the installed dict, so reads missed it and later
+        # writes corrupted it.
+        class Plain:
+            pass
+
+        plan = self.native.ModelPlan(
+            ("model", Plain, False, (("a", "a", "a", ("int",), False, None),))
+        )
+        for value in (
+            self.native._parse_model(plan, b'{"a": 1}'),
+            self.native._build_model(plan, b'{"a": 1}'),
+        ):
+            self.assertIs(type(value), Plain)
+            self.assertEqual(value.a, 1)
+            value.b = 2
+            self.assertEqual(value.b, 2)
+            self.assertEqual(len(value.__dict__), len(list(value.__dict__)))
+            self.assertEqual(
+                {key: value.__dict__[key] for key in ("a", "b")}, {"a": 1, "b": 2}
+            )
+
     def test_nested_models_between_other_fields_keep_their_own_values(self):
         """Models inside models, before, between and after their siblings.
 
@@ -1148,6 +1204,46 @@ class EncodeTests(unittest.TestCase):
         exact = encode(plan, value, 1 << 20)
         self.assertEqual(encode(plan, value, len(exact)), exact)
         self.assertIsNone(encode(plan, value, len(exact) - 1))
+
+    def test_lone_surrogates_are_refused_before_the_codec_error_handler(self):
+        # As for the plain encoder: an application's "strict" codec error
+        # handler is Python code that could free the list being encoded.
+        import codecs
+
+        plan = self.plan(list[Item])
+        payload = [
+            Item(id=1, name="x\ud800", price=1.5, tags=[]),
+            *(
+                {"id": 2, "name": str(index) * 4096, "price": 1.5, "tags": []}
+                for index in range(1, 4)
+            ),
+        ]
+        # extra="forbid" reads every key of a response dict as text.
+        keyed = {"Value": 1, "Value\udc00": 1, "in": "a"}
+        reached = []
+
+        def handler(error):
+            reached.append(error.object)
+            del payload[1:]
+            return ("?", error.end)
+
+        codecs.register_error("strict", handler)
+        try:
+            results = [
+                self.native._encode_model_response_json(plan, payload, 1 << 20),
+                self.native._encode_model_json(self.plan(Item), payload[0], 1 << 20),
+                self.native._encode_model_response_json(
+                    self.plan(dict[str, Item]), {"k\ud800": payload[1]}, 1 << 20
+                ),
+                self.native._encode_model_response_json(
+                    self.plan(Aliased), keyed, 1 << 20
+                ),
+            ]
+        finally:
+            codecs.register_error("strict", codecs.strict_errors)
+        self.assertEqual(results, [None] * 4)
+        self.assertEqual(reached, [])
+        self.assertEqual(len(payload), 4)
 
     def test_encoding_while_another_thread_mutates_the_instance(self):
         import threading

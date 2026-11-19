@@ -1543,21 +1543,29 @@ class App(Router):
             raise ValueError(
                 "a mounted app cannot have a lifespan; give it to the outermost app"
             )
-        if app._asgi_middleware:
+        app._check_mounted_controls()
+        app._mounted = (self, prefix)
+        self._mounts.append((prefix, app, name))
+
+    def _check_mounted_controls(self) -> None:
+        """Refuse server-wide controls on an app that is, or is to be, mounted.
+
+        Run by ``mount()`` and again by ``build()`` over the whole mount tree,
+        so a control set on a sub-app after mounting is refused, not dropped.
+        """
+        if self._asgi_middleware:
             raise ValueError(
                 "a mounted app cannot have ASGI middleware; give it to the outermost app"
             )
         defaults = App()._settings
         changed = sorted(
-            key for key, value in app._settings.items() if value != defaults[key]
+            key for key, value in self._settings.items() if value != defaults[key]
         )
         if changed:
             raise ValueError(
                 f"a mounted app cannot set server-wide options ({', '.join(changed)});"
                 " set them on the outermost app"
             )
-        app._mounted = (self, prefix)
-        self._mounts.append((prefix, app, name))
 
     def _mount_asgi(self, path: str, app: Any, name: str | None) -> None:
         """Serve any ASGI application (Starlette, Django, a plain ASGI
@@ -1856,6 +1864,10 @@ class App(Router):
                     f"the app mounted at {prefix} has startup or shutdown handlers;"
                     " give them to the outermost app"
                 )
+            try:
+                app._check_mounted_controls()
+            except ValueError as error:
+                raise ValueError(f"the app mounted at {prefix}: {error}") from None
         overrides = self.dependency_overrides
         if not isinstance(overrides, dict):
             raise TypeError("dependency_overrides must be a dict")
@@ -2079,8 +2091,14 @@ class App(Router):
         available on Linux and macOS, and elsewhere the worker logs a warning
         and runs asyncio. ``"asyncio"`` always runs asyncio's loop, and is the
         way to keep the behaviour of releases before ``"auto"``. On the Rust
-        loop with one loop the worker also serves the connections on the loop's
-        thread, which removes a thread hop per request.
+        loop with one loop the worker can also serve the connections on the
+        loop's thread, which removes a thread hop per request but makes them
+        wait whenever another thread holds the GIL. ``"auto"`` does so only for
+        an application with no ``def`` route handler, request-scoped ``def``
+        or generator dependency or ``def`` exception handler; otherwise the
+        connections keep I/O threads of their own beside the loop. Naming
+        ``"bessemer"``, ``io_backend="io_uring"`` or a build with the GIL
+        disabled keeps them on the loop's thread.
         ``io_backend="io_uring"`` does the socket I/O of a worker that serves
         connections on bessemer's loop (``event_loop`` resolving to
         ``"bessemer"`` with one loop) through io_uring instead of epoll. It needs Linux 6.1 or later
@@ -2167,6 +2185,10 @@ class App(Router):
             max_request_target_size=max_request_target_size,
             min_send_rate=min_send_rate,
             listener_fd=listener_fd,
+            # Set only by the supervised worker's entry point (the CLI), which
+            # received the descriptor as a bare number. Never inferred from the
+            # environment: every child of a worker inherits it.
+            own_listener=getattr(self, "_supervised_listener", False),
             ready_fd=ready_fd,
             max_requests=max_requests,
             tls_cert=tls_cert,
@@ -2264,6 +2286,7 @@ class App(Router):
         max_request_target_size: int = 8192,
         min_send_rate: int = 240,
         listener_fd: int | None = None,
+        own_listener: bool = False,
         ready_fd: int | None = None,
         max_requests: int = 0,
         shutdown_fd: int | None = None,
@@ -2393,6 +2416,10 @@ class App(Router):
                 _native.Bridge() for _ in range(loops - 1)
             ]
             worker.attach_native(*bridges)
+            if shutdown_fd is None:
+                # Beside the server's own "listening" line, which an embedded
+                # server (the test client) also leaves out.
+                print(worker._layout_line(), file=sys.stderr, flush=True)
             _native.serve(
                 routes,
                 bridges[0] if loops == 1 else bridges,
@@ -2415,8 +2442,7 @@ class App(Router):
                 # A supervised worker inherited its listener as a bare
                 # descriptor; the server closes that copy once it has its own,
                 # so a draining worker stops holding the socket open.
-                own_listener=listener_fd is not None
-                and os.environ.get("BESSEMER_SUPERVISED_WORKER") == "1",
+                own_listener=own_listener and listener_fd is not None,
                 ready_fd=_native_handle(ready_fd),
                 max_requests=max_requests,
                 controls=self._export_settings(),

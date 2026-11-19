@@ -9,6 +9,7 @@ use ring::{hmac, signature};
 use serde_json::{Map, Value};
 use std::{
     collections::{HashMap, HashSet},
+    hash::{BuildHasher, BuildHasherDefault, Hasher, RandomState},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -84,10 +85,23 @@ enum Material {
     Ed25519(Vec<u8>),
 }
 
+/// The `issuer` member Microsoft Entra ID publishes on each key of its v2.0
+/// key sets: the issuer the key signs for, or for keys shared by every tenant
+/// a template containing `{tenantid}`.
+enum KeyIssuer {
+    Absent,
+    Named(Box<str>),
+    /// Present but not a string; such a key never verifies an Entra token.
+    Malformed,
+}
+
+const TENANT_PLACEHOLDER: &[u8] = b"{tenantid}";
+
 pub(crate) struct Key {
     kid: Option<String>,
     algorithms: Vec<Algorithm>,
     material: Material,
+    issuer: KeyIssuer,
 }
 
 impl Key {
@@ -112,9 +126,89 @@ impl Key {
             }
         }
     }
+
+    /// Whether this key may sign a token with these claims under Microsoft
+    /// Entra ID's rule for multi-tenant key sets: a key's published `issuer`
+    /// must equal the token's `iss` once a `{tenantid}` template takes the
+    /// token's `tid`. A key without the member is not restricted.
+    ///
+    /// The v2.0 key set also verifies v1.0 tokens, whose `iss` is
+    /// `https://sts.windows.net/{tid}/` and which no key issuer ever names.
+    /// As in Microsoft's own validator (`ValidateIssuerSigningKey` in
+    /// `Microsoft.IdentityModel.Validators`), such a token is accepted when
+    /// the key's issuer is the v2.0 issuer of the token's own tenant; here
+    /// only when `iss` is exactly `https://<host>/{tid}/` and the key's
+    /// issuer, after substitution, ends with `/{tid}/v2.0`.
+    fn signs_for(&self, claims: &Map<String, Value>) -> bool {
+        let template = match &self.issuer {
+            KeyIssuer::Absent => return true,
+            KeyIssuer::Malformed => return false,
+            KeyIssuer::Named(value) => value.as_bytes(),
+        };
+        let Some(issuer) = claims.get("iss").and_then(Value::as_str) else {
+            return false;
+        };
+        let issuer = issuer.as_bytes();
+        let tenant = claims.get("tid").and_then(Value::as_str);
+        let placeholder = template
+            .windows(TENANT_PLACEHOLDER.len())
+            .position(|window| window.eq_ignore_ascii_case(TENANT_PLACEHOLDER));
+        let parts = match placeholder {
+            None if template == issuer => return true,
+            None => (template, &b""[..], &b""[..]),
+            Some(at) => {
+                let Some(tenant) = tenant else {
+                    return false;
+                };
+                let (prefix, rest) = (&template[..at], &template[at + TENANT_PLACEHOLDER.len()..]);
+                // `iss == prefix + tid + rest`, compared without building it.
+                if issuer.len() == prefix.len() + tenant.len() + rest.len()
+                    && issuer.starts_with(prefix)
+                    && issuer.ends_with(rest)
+                    && &issuer[prefix.len()..issuer.len() - rest.len()] == tenant.as_bytes()
+                {
+                    return true;
+                }
+                (prefix, tenant.as_bytes(), rest)
+            }
+        };
+        // Not equal: accept only a v1.0 token for the key's own tenant.
+        let Some(tenant) = tenant else {
+            return false;
+        };
+        if !v1_issuer_for(issuer, tenant) {
+            return false;
+        }
+        let effective = [parts.0, parts.1, parts.2].concat();
+        let suffix = format!("/{tenant}/v2.0");
+        effective.ends_with(suffix.as_bytes())
+    }
+}
+
+/// Whether `iss` is a v1.0 Entra issuer for `tenant`: exactly
+/// `https://<host>/<tenant>/`, one path segment equal to the tenant. Which
+/// hosts are allowed is for the configured issuer list to decide.
+fn v1_issuer_for(issuer: &[u8], tenant: &str) -> bool {
+    let tenant = tenant.as_bytes();
+    if tenant.is_empty() || tenant.contains(&b'/') {
+        return false;
+    }
+    let Some(rest) = issuer.strip_prefix(b"https://") else {
+        return false;
+    };
+    let Some(slash) = rest.iter().position(|&byte| byte == b'/') else {
+        return false;
+    };
+    let (host, path) = rest.split_at(slash);
+    !host.is_empty()
+        && path.len() == tenant.len() + 2
+        && path.ends_with(b"/")
+        && &path[1..path.len() - 1] == tenant
 }
 
 struct Cached {
+    /// The full token: entries are found by its keyed hash, then compared.
+    token: Box<str>,
     claims: Arc<Value>,
     /// The remote key set generation this was verified against.
     generation: u64,
@@ -122,9 +216,36 @@ struct Cached {
     valid_until: f64,
 }
 
+/// Entries keyed by an already computed token hash.
+#[derive(Default)]
+struct Prehashed(u64);
+
+impl Hasher for Prehashed {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
 struct Cache {
-    entries: HashMap<Box<str>, Cached>,
+    entries: HashMap<u64, Cached, BuildHasherDefault<Prehashed>>,
     capacity: usize,
+}
+
+struct TokenCache {
+    /// Hashes a token before the lock is taken (keyed, so tokens cannot be
+    /// chosen to collide; a collision only costs a cache miss).
+    hasher: RandomState,
+    cache: Mutex<Cache>,
 }
 
 pub struct JwtAuth {
@@ -137,7 +258,7 @@ pub struct JwtAuth {
     require_exp: bool,
     entra_access_token: bool,
     pub exclude_paths: HashSet<String>,
-    cache: Option<Mutex<Cache>>,
+    cache: Option<TokenCache>,
     remote: Option<Arc<crate::jwks::Remote>>,
 }
 
@@ -369,10 +490,16 @@ fn jwk_key(jwk: &Value, allowed: &HashSet<Algorithm>) -> Result<Option<Key>, Str
             allowed.contains(algorithm) && declared.is_none_or(|value| value == *algorithm)
         })
         .collect();
+    let issuer = match jwk.get("issuer") {
+        None => KeyIssuer::Absent,
+        Some(Value::String(value)) => KeyIssuer::Named(value.as_str().into()),
+        Some(_) => KeyIssuer::Malformed,
+    };
     Ok((!algorithms.is_empty()).then_some(Key {
         kid,
         algorithms,
         material,
+        issuer,
     }))
 }
 
@@ -478,6 +605,7 @@ impl JwtAuth {
                             algorithm.hmac().unwrap(),
                             &secret,
                         )),
+                        issuer: KeyIssuer::Absent,
                     });
                 }
             }
@@ -632,11 +760,15 @@ impl JwtAuth {
             require_exp,
             entra_access_token,
             exclude_paths: paths.into_iter().collect(),
-            cache: (cache_size > 0).then(|| {
-                Mutex::new(Cache {
-                    entries: HashMap::with_capacity(cache_size.min(4096)),
+            cache: (cache_size > 0).then(|| TokenCache {
+                hasher: RandomState::new(),
+                cache: Mutex::new(Cache {
+                    entries: HashMap::with_capacity_and_hasher(
+                        cache_size.min(4096),
+                        BuildHasherDefault::default(),
+                    ),
                     capacity: cache_size,
-                })
+                }),
             }),
             remote,
         })
@@ -658,10 +790,16 @@ impl JwtAuth {
         }
         let token = std::str::from_utf8(token).map_err(|_| Rejection::Invalid)?;
         let generation = self.remote.as_ref().map_or(0, |remote| remote.generation());
-        if let Some(cache) = &self.cache {
-            let mut cache = cache.lock().unwrap();
-            if let Some(entry) = cache.entries.get(token) {
-                if entry.generation == generation
+        // Hashed before the lock: every request's lookup shares one mutex.
+        let hash = self
+            .cache
+            .as_ref()
+            .map(|cache| cache.hasher.hash_one(token));
+        if let (Some(cache), Some(hash)) = (&self.cache, hash) {
+            let mut cache = cache.cache.lock().unwrap();
+            if let Some(entry) = cache.entries.get(&hash) {
+                if *entry.token == *token
+                    && entry.generation == generation
                     && now < entry.valid_until
                     && entry
                         .expires
@@ -669,17 +807,24 @@ impl JwtAuth {
                 {
                     return Ok(entry.claims.clone());
                 }
-                cache.entries.remove(token);
+                cache.entries.remove(&hash);
             }
         }
         let (claims, expires) = self.verify_uncached(token, now)?;
         let claims = Arc::new(claims);
-        if let Some(cache) = &self.cache {
+        if let (Some(cache), Some(hash)) = (&self.cache, hash) {
             let valid_until = now
                 + expires
                     .map_or(MAX_CACHE_SECONDS, |expires| expires + self.leeway - now)
                     .min(MAX_CACHE_SECONDS);
-            let mut cache = cache.lock().unwrap();
+            let entry = Cached {
+                token: token.into(),
+                claims: claims.clone(),
+                generation,
+                expires,
+                valid_until,
+            };
+            let mut cache = cache.cache.lock().unwrap();
             if cache.entries.len() >= cache.capacity {
                 cache.entries.retain(|_, entry| now < entry.valid_until);
                 if cache.entries.len() >= cache.capacity {
@@ -687,15 +832,7 @@ impl JwtAuth {
                     cache.entries.clear();
                 }
             }
-            cache.entries.insert(
-                token.into(),
-                Cached {
-                    claims: claims.clone(),
-                    generation,
-                    expires,
-                    valid_until,
-                },
-            );
+            cache.entries.insert(hash, entry);
         }
         Ok(claims)
     }
@@ -744,17 +881,17 @@ impl JwtAuth {
         {
             remote.kid_miss();
         }
-        let verified = match kid {
+        let signer = match kid {
             Some(kid) if identified => candidates
                 .find(|key| key.kid.as_deref() == Some(kid))
-                .is_some_and(|key| key.verify(algorithm, message, &signature_bytes)),
-            None if identified => false,
+                .filter(|key| key.verify(algorithm, message, &signature_bytes)),
+            None if identified => None,
             // Unidentified keys are tried in order; JWKS limits these to eight.
-            _ => candidates.any(|key| key.verify(algorithm, message, &signature_bytes)),
+            _ => candidates.find(|key| key.verify(algorithm, message, &signature_bytes)),
         };
-        if !verified {
+        let Some(signer) = signer else {
             return Err(Rejection::Invalid);
-        }
+        };
         let payload = base64url(payload.as_bytes()).ok_or(Rejection::Invalid)?;
         let claims = bessemer_codec::parse_value(&payload).map_err(|_| Rejection::Invalid)?;
         let object = claims.as_object().ok_or(Rejection::Invalid)?;
@@ -791,6 +928,11 @@ impl JwtAuth {
             }
         }
         if self.entra_access_token && !entra_access_claims(object) {
+            return Err(Rejection::Invalid);
+        }
+        // Entra's multi-tenant key set (`common`) holds keys for one tenant
+        // beside keys for every tenant; each names the issuer it signs for.
+        if self.entra_access_token && !signer.signs_for(object) {
             return Err(Rejection::Invalid);
         }
         Ok((claims, expires))
@@ -1023,7 +1165,17 @@ mod tests {
             let token = hs256(&header, &json!({"exp": 1000 + exp}));
             assert!(jwt.verify(token.as_bytes(), 10.0).is_ok());
         }
-        assert!(jwt.cache.as_ref().unwrap().lock().unwrap().entries.len() <= 2);
+        assert!(
+            jwt.cache
+                .as_ref()
+                .unwrap()
+                .cache
+                .lock()
+                .unwrap()
+                .entries
+                .len()
+                <= 2
+        );
     }
 
     #[test]
@@ -1267,6 +1419,208 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    fn entra_vectors() -> (Value, impl Fn(&str) -> Vec<u8>) {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/entra_vectors.json")).unwrap();
+        let tokens = vectors.clone();
+        let token = move |name: &str| {
+            tokens[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(".")
+                .into_bytes()
+        };
+        (vectors, token)
+    }
+
+    fn entra_auth(vectors: &Value, jwks: &Value, entra: bool) -> JwtAuth {
+        // Unique per call: tests running in parallel each write their own set.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "bessemer-entra-{}-{call}-{entra}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, jwks.to_string()).unwrap();
+        let jwt = JwtAuth::parse(
+            &json!({
+                "algorithms": ["RS256"],
+                "jwks_file": path.to_str().unwrap(),
+                "issuer": vectors["issuers"],
+                "audience": "api",
+                "entra_access_token": entra,
+            }),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        jwt
+    }
+
+    #[test]
+    fn entra_keys_sign_only_for_the_issuer_they_publish() {
+        let (vectors, token) = entra_vectors();
+        let entra = entra_auth(&vectors, &vectors["jwks"], true);
+        let plain = entra_auth(&vectors, &vectors["jwks"], false);
+        for (name, accepted) in [
+            // The {tenantid} template takes the token's own tid.
+            ("template_tenant1", true),
+            ("template_tenant2", true),
+            ("template_mismatched_tid", false),
+            ("template_without_tid", false),
+            // A concrete key issuer must equal iss.
+            ("tenant1_key_for_tenant1", true),
+            ("tenant1_key_for_tenant2", false),
+            // A key without the member is not restricted.
+            ("plain_key_for_tenant2", true),
+        ] {
+            // The second verification is a cache hit and must agree.
+            for _ in 0..2 {
+                assert_eq!(entra.verify(&token(name), 1.0).is_ok(), accepted, "{name}");
+            }
+            // Without the Entra policy the member is ignored, as before.
+            assert!(plain.verify(&token(name), 1.0).is_ok(), "{name}");
+        }
+        // The placeholder is matched without regard to case, as Microsoft's
+        // own validation does; a non-string member never verifies.
+        let mut jwks = vectors["jwks"].clone();
+        for key in jwks["keys"].as_array_mut().unwrap() {
+            match key["kid"].as_str().unwrap() {
+                "multi" => {
+                    key["issuer"] = json!("https://login.microsoftonline.com/{TenantId}/v2.0")
+                }
+                "plain" => key["issuer"] = json!(5),
+                _ => {}
+            }
+        }
+        let edited = entra_auth(&vectors, &jwks, true);
+        assert!(edited.verify(&token("template_tenant2"), 1.0).is_ok());
+        assert!(
+            edited
+                .verify(&token("template_mismatched_tid"), 1.0)
+                .is_err()
+        );
+        assert!(edited.verify(&token("plain_key_for_tenant2"), 1.0).is_err());
+        assert!(
+            entra_auth(&vectors, &jwks, false)
+                .verify(&token("plain_key_for_tenant2"), 1.0)
+                .is_ok()
+        );
+    }
+
+    /// The v2.0 key set also verifies v1.0 tokens (`iss`
+    /// `https://sts.windows.net/{tid}/`), which no key issuer names: such a
+    /// token is accepted only when the key's issuer is its own tenant's v2.0
+    /// issuer.
+    #[test]
+    fn v1_tokens_verify_against_their_own_tenants_v2_key_issuer() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/entra_v1_vectors.json")).unwrap();
+        let token = |name: &str| {
+            vectors[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(".")
+                .into_bytes()
+        };
+        let entra = entra_auth(&vectors, &vectors["jwks"], true);
+        let plain = entra_auth(&vectors, &vectors["jwks"], false);
+        for (name, accepted) in [
+            ("v1_template_tenant1", true),
+            ("v1_tenant1_key_for_tenant1", true),
+            ("v1_tenant1_key_for_tenant2", false),
+            // The path segment of a v1.0 issuer must be the token's tid.
+            ("v1_iss_not_tid", false),
+            ("v1_template_without_tid", false),
+            // v2.0 tokens keep the exact rule.
+            ("v2_template_tenant2", true),
+            ("v2_tenant1_key_for_tenant2", false),
+        ] {
+            for _ in 0..2 {
+                assert_eq!(entra.verify(&token(name), 1.0).is_ok(), accepted, "{name}");
+            }
+            assert!(plain.verify(&token(name), 1.0).is_ok(), "{name}");
+        }
+        assert!(v1_issuer_for(b"https://sts.windows.net/t/", "t"));
+        for (issuer, tenant) in [
+            ("https://sts.windows.net/t", "t"),
+            ("https://sts.windows.net/t/x/", "t"),
+            ("https://sts.windows.net/x/t/", "t"),
+            ("https://sts.windows.net//", ""),
+            ("https:///t/", "t"),
+            ("http://sts.windows.net/t/", "t"),
+            ("https://sts.windows.net/a/b/", "a/b"),
+        ] {
+            assert!(!v1_issuer_for(issuer.as_bytes(), tenant), "{issuer}");
+        }
+    }
+
+    #[test]
+    fn a_refreshed_key_issuer_applies_to_tokens_already_cached() {
+        let (vectors, token) = entra_vectors();
+        // The issuer first publishes tenant1's key without its issuer member.
+        let mut unbound = vectors["jwks"].clone();
+        for key in unbound["keys"].as_array_mut().unwrap() {
+            key.as_object_mut().unwrap().remove("issuer");
+        }
+        let body = Arc::new(Mutex::new(unbound.to_string()));
+        let port = serve_jwks(body.clone());
+        let jwt = JwtAuth::parse(
+            &json!({
+                "algorithms": ["RS256"],
+                "jwks_url": format!("http://127.0.0.1:{port}/keys"),
+                "issuer": vectors["issuers"],
+                "audience": "api",
+                "entra_access_token": true,
+            }),
+            |_| unreachable!(),
+        )
+        .unwrap();
+        let other_tenant = token("tenant1_key_for_tenant2");
+        assert!(jwt.verify(&other_tenant, 1.0).is_ok());
+        assert!(jwt.verify(&other_tenant, 1.0).is_ok());
+        // The set is republished with each key's issuer; a token naming an
+        // unknown kid prompts the refetch.
+        *body.lock().unwrap() = vectors["jwks"].to_string();
+        let unknown = hs256(&json!({"alg": "RS256", "kid": "rotated"}), &json!({}));
+        assert!(jwt.verify(unknown.as_bytes(), 1.0).is_err());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while jwt.verify(&other_tenant, 1.0).is_ok() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(jwt.verify(&other_tenant, 1.0), Err(Rejection::Invalid));
+        assert!(jwt.verify(&token("tenant1_key_for_tenant1"), 1.0).is_ok());
+    }
+
+    #[test]
+    fn cached_tokens_are_compared_in_full() {
+        let jwt = auth(json!({"cache_size": 8}));
+        let header = json!({"alg": "HS256"});
+        let token = hs256(&header, &json!({"sub": "a", "exp": 2000}));
+        assert_eq!(jwt.verify(token.as_bytes(), 1.0).unwrap()["sub"], "a");
+        // Plant the entry under another token's hash: a lookup that only
+        // matched hashes would hand back the wrong claims.
+        let other = hs256(&header, &json!({"sub": "b", "exp": 2000}));
+        let cache = jwt.cache.as_ref().unwrap();
+        let (hash, planted) = (
+            cache.hasher.hash_one(token.as_str()),
+            cache.hasher.hash_one(other.as_str()),
+        );
+        {
+            let mut entries = cache.cache.lock().unwrap();
+            let entry = entries.entries.remove(&hash).unwrap();
+            entries.entries.insert(planted, entry);
+        }
+        assert_eq!(jwt.verify(other.as_bytes(), 1.0).unwrap()["sub"], "b");
+        assert_eq!(jwt.verify(token.as_bytes(), 1.0).unwrap()["sub"], "a");
     }
 
     #[test]

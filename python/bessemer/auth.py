@@ -426,5 +426,19 @@ def require_scope(*scopes: str):
             raise HTTPException(403, "Insufficient scope")
         return principal
 
+    # The check never blocks, so a route resolving it runs this coroutine
+    # function on its event loop instead of the handler pool, and it does not
+    # count as synchronous work (see ``schema._Compiler``). A direct
+    # call of the returned dependency still returns the principal.
+    async def run_inline(principal: Principal) -> Principal:
+        return dependency(principal)
+
     dependency.__name__ = f"require_scope_{'_'.join(sorted(required))}"
+    run_inline.__name__ = dependency.__name__
+    # The twin stands in for this function and no other. ``functools.wraps``
+    # copies ``__dict__``, so a wrapper around the dependency carries the
+    # attribute too, and its own checks must still run: the compiler uses the
+    # twin only for the function the twin names.
+    run_inline._bessemer_inline_of = dependency
+    dependency._bessemer_inline = run_inline
     return dependency

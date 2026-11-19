@@ -1022,8 +1022,8 @@ fn add_uploads(
                         file.set_item("data", PyBytes::new(py, data))?;
                     }
                     crate::forms::UploadData::Spooled { file: spool, range } => {
-                        // Python owns its own handle on the spool file,
-                        // closed with the UploadFile.
+                        // Each part shares the request's one spool
+                        // descriptor, let go of with its UploadFile.
                         let opened = crate::uploads::python_file(py, spool)?;
                         file.set_item("spooled", opened)?;
                         file.set_item("offset", range.start)?;

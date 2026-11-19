@@ -167,6 +167,23 @@ struct Table {
     entries: Vec<PathEntry>,
 }
 
+/// An HTTP/2 extended CONNECT for a WebSocket (RFC 8441), which the
+/// transport hands on as a GET. Only HTTP/2 requests can be one, so others
+/// skip the extensions lookup.
+fn opens_websocket(request: &Request) -> bool {
+    request.version() == axum::http::Version::HTTP_2
+        && request
+            .extensions()
+            .get::<crate::websocket::Http2Connect>()
+            .is_some()
+}
+
+/// The refusal of an extended CONNECT to something that is not a WebSocket
+/// route: any status but a `2xx` fails the client's handshake.
+fn not_a_websocket_route() -> Response {
+    error(StatusCode::BAD_REQUEST, "Not a WebSocket route")
+}
+
 pub(crate) struct Dispatcher {
     table: Table,
     state: Arc<ServerState>,
@@ -455,10 +472,15 @@ impl Dispatcher {
             Some(entry) => select(&entry.routes, &method),
         };
         let template = entry.map_or("<unmatched>", |entry| &*entry.template);
-        let coding = self
-            .controls
-            .compression()
-            .and_then(|compression| compression.negotiate(request.headers()));
+        // With compression on, `If-None-Match` tells which representation a
+        // `304` revalidates; it is read now, before the handler has the request.
+        let (coding, if_none_match) = match self.controls.compression() {
+            Some(compression) => (
+                compression.negotiate(request.headers()),
+                request.headers().get(header::IF_NONE_MATCH).cloned(),
+            ),
+            None => (None, None),
+        };
         let peer = peer.or_else(|| {
             request
                 .extensions()
@@ -497,12 +519,20 @@ impl Dispatcher {
             received,
         };
         let mut response = match response {
+            // A success would read as an open tunnel to an extended CONNECT.
+            Some(response) if response.status().is_success() && opens_websocket(request) => {
+                not_a_websocket_route()
+            }
             Some(response) => *response,
             None => match selected {
                 Selected::Route(route) => {
                     if route.websocket && !self.controls.websocket_origin_allowed(request.headers())
                     {
                         error(StatusCode::FORBIDDEN, "WebSocket origin is not allowed")
+                    } else if !route.websocket && opens_websocket(request) {
+                        // Refused before the handler runs: its response
+                        // would read as an accepted handshake.
+                        not_a_websocket_route()
                     } else {
                         // Not boxed: borrowing the request and its info, the
                         // handler's future is a few hundred bytes.
@@ -522,8 +552,17 @@ impl Dispatcher {
                         .await
                     }
                 }
+                // Only the router's own 405 names the path's methods: a
+                // control's rejection (401, 403, 429...) comes first and must
+                // not tell an unauthenticated client which methods exist.
                 Selected::MethodNotAllowed => {
-                    error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
+                    let mut response = error(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed");
+                    if let Some(entry) = entry {
+                        response
+                            .headers_mut()
+                            .insert(header::ALLOW, entry.allow.clone());
+                    }
+                    response
                 }
                 Selected::NotFound => match self.table.redirect_slash(request.uri(), &method) {
                     Some(redirect) => redirect,
@@ -537,6 +576,15 @@ impl Dispatcher {
             response = Box::pin(self.controls.resolve_response(response)).await;
         }
         let omit_head_length = if let Some(compression) = self.controls.compression() {
+            // A file's 304 or 206 says what its 200 would have been.
+            if response
+                .extensions()
+                .get::<crate::compression::Representation>()
+                .is_some()
+            {
+                response =
+                    Box::pin(compression.complete(coding, if_none_match.as_ref(), response)).await;
+            }
             if method == Method::HEAD {
                 compression.prepare_head(coding, &mut response)
             } else {
@@ -549,15 +597,6 @@ impl Dispatcher {
         };
         self.controls
             .finish(&context, &mut response, template, direct);
-        // The path matched but the method did not: every response from that
-        // fallback carries the path's methods unless it already names some.
-        if let (Selected::MethodNotAllowed, Some(entry)) = (&selected, entry)
-            && !response.headers().contains_key(header::ALLOW)
-        {
-            response
-                .headers_mut()
-                .insert(header::ALLOW, entry.allow.clone());
-        }
         finish(&method, &mut response, omit_head_length);
         response
     }
@@ -874,6 +913,81 @@ mod tests {
         assert!(response.body().is_end_stream());
     }
 
+    fn test_state() -> Arc<crate::ServerState> {
+        Arc::new(pyo3::Python::attach(|py| crate::ServerState {
+            dispatch: py.None(),
+            native: crate::bridge::Lanes::new(Vec::new()),
+            capacity: Arc::new(tokio::sync::Semaphore::new(1)),
+            max_body_size: 8,
+            max_response_size: 64,
+            request_bytes: crate::budget::ByteBudget::new(8),
+            response_bytes: crate::budget::ByteBudget::new(64),
+            body_waits: crate::budget::BodyWaits::new(1),
+            request_timeout: std::time::Duration::from_secs(1),
+            deadlines: crate::deadline::Deadlines::default(),
+            websocket_compression: false,
+            websocket_sessions: Arc::new(tokio::sync::Semaphore::new(1)),
+            uploads: None,
+        }))
+    }
+
+    /// `Allow` belongs to the router's own 405. A control's rejection of a
+    /// request whose method the path lacks must look the same as its
+    /// rejection of an unknown path, or it lists the methods to anyone.
+    #[test]
+    fn only_the_routers_own_405_names_the_methods() {
+        let controls =
+            controls::Controls::from_json(&serde_json::json!({"allowed_hosts": ["good.test"]}))
+                .unwrap();
+        let dispatcher = Dispatcher::new(
+            vec![
+                route(0, Method::GET, "/private"),
+                route(1, Method::POST, "/private"),
+            ],
+            test_state(),
+            Arc::new(controls),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let send = |method: Method, path: &str, host: Option<&'static str>| {
+            let mut request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            if let Some(host) = host {
+                request
+                    .headers_mut()
+                    .insert(header::HOST, HeaderValue::from_static(host));
+            }
+            let response = runtime.block_on(dispatcher.call(&mut request, None, None));
+            (
+                response.status(),
+                response.headers().get(header::ALLOW).cloned(),
+            )
+        };
+        assert_eq!(
+            send(Method::PUT, "/private", Some("good.test")),
+            (
+                StatusCode::METHOD_NOT_ALLOWED,
+                Some(HeaderValue::from_static("GET,HEAD,POST"))
+            )
+        );
+        for path in ["/private", "/nonexistent"] {
+            assert_eq!(
+                send(Method::PUT, path, Some("evil.test")),
+                (StatusCode::BAD_REQUEST, None),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            send(Method::PUT, "/nonexistent", Some("good.test")),
+            (StatusCode::NOT_FOUND, None)
+        );
+    }
+
     fn size_of<F>(_: &F) -> usize {
         std::mem::size_of::<F>()
     }
@@ -891,9 +1005,11 @@ mod tests {
             max_response_size: 64,
             request_bytes: crate::budget::ByteBudget::new(8),
             response_bytes: crate::budget::ByteBudget::new(64),
+            body_waits: crate::budget::BodyWaits::new(1),
             request_timeout: std::time::Duration::from_secs(1),
             deadlines: crate::deadline::Deadlines::default(),
             websocket_compression: false,
+            websocket_sessions: Arc::new(tokio::sync::Semaphore::new(1)),
             uploads: None,
         });
         let state = Arc::new(state);

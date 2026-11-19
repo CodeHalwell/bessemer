@@ -90,10 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         "--event-loop",
         choices=("auto", "asyncio", "bessemer"),
         help="the workers' event loop: 'auto' (default) runs 'bessemer', a loop "
-        "written in Rust that serves connections on its own thread, on Linux and "
-        "macOS with --loops 1, and asyncio otherwise; 'asyncio' always runs "
-        "asyncio; 'bessemer' asks for the Rust loop (falls back to asyncio with a "
-        "warning where it is unavailable)",
+        "written in Rust, on Linux and macOS with --loops 1, and asyncio "
+        "otherwise, and serves connections on the loop's own thread only for an "
+        "application without sync handlers or dependencies; 'asyncio' always "
+        "runs asyncio; 'bessemer' asks for the Rust loop, serving on its thread "
+        "with --loops 1 whatever the application has (falls back to asyncio with "
+        "a warning where it is unavailable)",
     )
     run.add_argument(
         "--io-backend",
@@ -262,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
                     "process-local metrics require --workers 1 until multi-process aggregation is supported"
                 )
             app._worker_processes = args.worker_count
+            # The supervisor handed this process the listening descriptor as a
+            # bare number, so the server closes its copy once it has its own.
+            app._supervised_listener = True
             app.run(**settings, listener_fd=args.listener_fd, ready_fd=args.ready_fd)
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 -- CLI reports application failures.
         if isinstance(error, KeyboardInterrupt):

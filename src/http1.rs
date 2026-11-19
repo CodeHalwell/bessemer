@@ -70,6 +70,9 @@ const READ_INITIAL_CAPACITY: usize = 2048;
 /// keeps reading what its client is still sending (see [`linger`]).
 const LINGER: Duration = Duration::from_millis(500);
 const LINGER_BYTES: usize = 64 * 1024;
+/// How long in all a connection answered before its request body was read
+/// goes on reading that body (see [`linger_body`]).
+const LINGER_BODY: Duration = Duration::from_secs(5);
 /// Keep large-header/body reads amortised once a connection needs more space.
 const READ_GROWTH: usize = 8192;
 const READ_MIN_SPARE: usize = 1024;
@@ -212,10 +215,15 @@ pub(crate) async fn serve<S, F>(
         on_response();
         match next {
             Ok(Next::KeepAlive) if !*stop.borrow() => continue,
-            Ok(_) | Err(_) => {
+            Ok(_) => {
                 let _ = stream.shutdown().await;
                 return;
             }
+            // The exchange failed: the peer left, stopped reading or ran
+            // out of time. A graceful close (a TLS close_notify) would wait
+            // on that same peer under a fresh deadline, so the connection
+            // is dropped instead and its slot released at once.
+            Err(_) => return,
         }
     }
 }
@@ -807,6 +815,8 @@ async fn exchange(
         ..DirectHeaders::default()
     };
     let mut body_complete = framing == Framing::Empty;
+    // The application answered while the body was still arriving.
+    let mut unread = false;
     // A body that arrived with its head needs neither channel nor pump.
     let ready = match framing {
         Framing::Length(length) if length > 0 && buffer.len() as u64 >= length => {
@@ -873,7 +883,10 @@ async fn exchange(
             }
         };
         match early {
-            Some(response) => response,
+            Some(response) => {
+                unread = true;
+                response
+            }
             // The body was read in full: watch for the peer leaving while the
             // application works, as hyper does.
             None if body_complete => watch_peer(call.as_mut(), stream, buffer, read_limit).await?,
@@ -882,14 +895,21 @@ async fn exchange(
     };
     let keep_alive = keep_alive && body_complete;
     let response = match direct.fast.take() {
-        Some(json) if version == Version::HTTP_11 => {
+        Some(json) if version == Version::HTTP_11 && !unread => {
             return write_json(stream, json, &direct, keep_alive, out).await;
         }
         // HTTP/1.0 needs its own version and connection-header handling.
         Some(json) => json.into_response(),
         None => response,
     };
-    write_response(stream, response, &direct, &method, version, keep_alive, out).await
+    let next = write_response(stream, response, &direct, &method, version, keep_alive, out).await?;
+    if unread {
+        // Answered with the body unread, so the connection closes: say so,
+        // then read what the client is still sending before letting go.
+        let _ = stream.shutdown().await;
+        Box::pin(linger_body(stream)).await;
+    }
+    Ok(next)
 }
 
 /// Write an owned JSON result on an HTTP/1.1 connection, as
@@ -1411,6 +1431,22 @@ async fn linger(stream: &mut (impl AsyncRead + Unpin)) {
                 Ok(read) => left = left.saturating_sub(read),
             }
         }
+    })
+    .await;
+}
+
+/// Read and discard the request body a client is still sending after it was
+/// answered (a `413` for the length it declared, a `401`), until it closes,
+/// sends nothing for [`LINGER`], or [`LINGER_BODY`] has passed. Closing on
+/// that input resets the connection instead, and a client still sending then
+/// loses the answer: Windows discards a response already received. Unlike
+/// [`linger`] there is no limit in bytes, which a client sending the body it
+/// declared passes at once; nothing read is kept, and the request's
+/// admission has been returned.
+async fn linger_body(stream: &mut (impl AsyncRead + Unpin)) {
+    let mut scratch = vec![0u8; 16 * 1024];
+    let _ = tokio::time::timeout(LINGER_BODY, async {
+        while let Ok(Ok(1..)) = tokio::time::timeout(LINGER, stream.read(&mut scratch)).await {}
     })
     .await;
 }
@@ -2148,11 +2184,16 @@ impl<S> SendDeadline<S> {
                 *task = Some(context.waker().clone());
             }
         }
+        // The ambiguous first wake is not progress when it is the deadline's
+        // own: counted, it would restart the idle clock once it had run out.
+        let unregistered = std::mem::take(&mut stall.unregistered)
+            && !stall.deadline.is_elapsed()
+            && Instant::now() < stall.deadline.deadline();
         let progressed = stall
             .progress
             .woken
             .swap(false, std::sync::atomic::Ordering::AcqRel)
-            | std::mem::take(&mut stall.unregistered);
+            | unregistered;
         let mut inner = Context::from_waker(&stall.waker);
         let result = operation(Pin::new(&mut self.stream), &mut inner);
         if let Poll::Ready(outcome) = &result {
@@ -3129,6 +3170,96 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_firing_is_not_progress() {
+        // A stream that never wakes: the only wake is the deadline's own,
+        // which once restarted the idle clock and doubled the wait.
+        let silent = Draining {
+            left: 100,
+            delay: Duration::from_secs(3600),
+        };
+        let mut stream = SendDeadline::new(silent, Duration::from_millis(100));
+        let began = Instant::now();
+        let error = stream.flush().await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            began.elapsed() < Duration::from_millis(150),
+            "{:?}",
+            began.elapsed()
+        );
+    }
+
+    /// A stream whose graceful close never completes, as a TLS close_notify
+    /// to a peer that has stopped reading.
+    struct NoClose(tokio::io::DuplexStream);
+
+    impl AsyncRead for NoClose {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(context, buffer)
+        }
+    }
+
+    impl AsyncWrite for NoClose {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(context, data)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(context)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_send_does_not_wait_again_to_close() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let big = Router::new().route("/big", get(|| async { vec![b'x'; 1 << 20] }));
+        let app = crate::transport::ProtocolChecked {
+            app: crate::transport::Application::Router(big),
+            target_limit: 8192,
+            tls: None,
+        };
+        let timeout = Duration::from_secs(4);
+        let began = Instant::now();
+        let task = tokio::spawn(async move {
+            serve(
+                SendDeadline::new(NoClose(server), timeout),
+                peer,
+                app,
+                config(),
+                stop,
+                || {},
+                async move |_, _| {},
+            )
+            .await;
+        });
+        client
+            .write_all(b"GET /big HTTP/1.1\r\nHost: a\r\n\r\n")
+            .await
+            .unwrap();
+        // Released when the write runs out of time, not after a second
+        // (and third) deadline spent on a close the peer cannot take.
+        tokio::time::timeout(Duration::from_secs(60), task)
+            .await
+            .expect("the connection was released")
+            .unwrap();
+        assert!(began.elapsed() < timeout * 3 / 2, "{:?}", began.elapsed());
+        drop(client);
+    }
+
     #[tokio::test]
     async fn the_send_deadline_only_counts_blocked_time() {
         // A reader that keeps draining slowly is never cut off, even though
@@ -4054,6 +4185,107 @@ mod tests {
                 assert!(waited >= LINGER && waited < LINGER * 2, "{waited:?}");
             }
             drop(client);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_answered_before_its_body_is_read_off_the_wire() {
+        // `POST /` is refused as soon as its head is read. Closing then
+        // would reset a client that is still sending, which can cost it the
+        // answer, so the server reads the rest: through a pipe this small
+        // the megabyte can only be written if it does.
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stop) = watch::channel(false);
+        let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+        let task = tokio::spawn(async move {
+            serve(
+                timed(server),
+                peer,
+                app(),
+                config(),
+                stop,
+                || {},
+                async |_, _| {},
+            )
+            .await;
+        });
+        client
+            .write_all(b"POST / HTTP/1.1\r\nhost: a\r\ncontent-length: 1048576\r\n\r\n")
+            .await
+            .unwrap();
+        client.write_all(&vec![b'a'; 1 << 20]).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).await.unwrap();
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 405 "), "{answer}");
+        assert!(answer.contains("connection: close\r\n"), "{answer}");
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unread_body_is_not_read_for_ever() {
+        // A client that stops sending without closing is let go after
+        // LINGER, one that never stops after LINGER_BODY, and one whose
+        // whole body arrived with its head is not waited for at all.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Client {
+            Silent,
+            Endless,
+            Complete,
+        }
+        for kind in [Client::Silent, Client::Endless, Client::Complete] {
+            let (mut client, server) = tokio::io::duplex(4096);
+            let (_stop, stop) = watch::channel(false);
+            let peer = SocketAddr::from(([127, 0, 0, 1], 5000));
+            let task = tokio::spawn(async move {
+                serve(
+                    timed(server),
+                    peer,
+                    app(),
+                    config(),
+                    stop,
+                    || {},
+                    async |_, _| {},
+                )
+                .await;
+            });
+            let began = Instant::now();
+            if kind == Client::Complete {
+                client
+                    .write_all(b"POST / HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nab")
+                    .await
+                    .unwrap();
+            } else {
+                client
+                    .write_all(b"POST / HTTP/1.1\r\nhost: a\r\ncontent-length: 1048576\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+            let (mut reading, mut writing) = tokio::io::split(client);
+            let sender = tokio::spawn(async move {
+                while kind == Client::Endless && writing.write_all(&[b'a'; 512]).await.is_ok() {
+                    tokio::time::sleep(LINGER / 5).await;
+                }
+                // Kept open: only the server's own limits end the exchange.
+                writing
+            });
+            task.await.unwrap();
+            let waited = began.elapsed();
+            match kind {
+                Client::Silent => {
+                    assert!(waited >= LINGER && waited < LINGER * 2, "{waited:?}")
+                }
+                Client::Endless => assert!(
+                    waited >= LINGER_BODY && waited < LINGER_BODY + LINGER,
+                    "{waited:?}"
+                ),
+                Client::Complete => assert!(waited < LINGER, "{waited:?}"),
+            }
+            let mut answer = Vec::new();
+            reading.read_to_end(&mut answer).await.unwrap();
+            assert!(answer.starts_with(b"HTTP/1.1 405 "));
+            drop(sender.await.unwrap());
         }
     }
 

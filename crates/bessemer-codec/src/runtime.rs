@@ -120,6 +120,75 @@ pub fn instance_with_dict<'py>(
     Ok(Some(instance))
 }
 
+/// Call `each` with every key and value of `dict`, in order, as strong
+/// references, stopping at its first error.
+///
+/// PyO3's dict iterator panics when the dict changes size while it is walked;
+/// here that ends the walk with the `RuntimeError` a Python `for` loop raises.
+/// Either can happen when `each` runs Python code that mutates the dict, or,
+/// on a free-threaded build, when another thread does. Each step reads the
+/// dict under its critical section, so the references are taken before
+/// anything can replace the entry.
+pub fn dict_try_for_each<'py>(
+    dict: &Bound<'py, pyo3::types::PyDict>,
+    mut each: impl FnMut(Bound<'py, PyAny>, Bound<'py, PyAny>) -> PyResult<()>,
+) -> PyResult<()> {
+    let py = dict.py();
+    let raw = dict.as_ptr();
+    // SAFETY: `raw` is a live dict borrowed for the call.
+    let length = unsafe { ffi::PyDict_Size(raw) };
+    let mut position: ffi::Py_ssize_t = 0;
+    let mut remaining = length;
+    loop {
+        let step = || {
+            // SAFETY: `raw` is a live dict, read under its critical section
+            // on free-threaded builds (the GIL otherwise). `PyDict_Next`
+            // bounds-checks `position` against the current table, and the
+            // borrowed entries it gives are made strong before the section
+            // ends.
+            unsafe {
+                if ffi::PyDict_Size(raw) != length {
+                    return Err("dictionary changed size during iteration");
+                }
+                let mut key = std::ptr::null_mut();
+                let mut value = std::ptr::null_mut();
+                if ffi::PyDict_Next(raw, &mut position, &mut key, &mut value) == 0 {
+                    return Ok(None);
+                }
+                Ok(Some((
+                    Bound::from_borrowed_ptr(py, key),
+                    Bound::from_borrowed_ptr(py, value),
+                )))
+            }
+        };
+        #[cfg(Py_GIL_DISABLED)]
+        let next = pyo3::sync::critical_section::with_critical_section(dict, step);
+        #[cfg(not(Py_GIL_DISABLED))]
+        let next = run_once(step);
+        match next {
+            Ok(Some((key, value))) => {
+                // The same size, but more entries than it had: some were
+                // replaced by others while the walk went on.
+                if remaining == 0 {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "dictionary keys changed during iteration",
+                    ));
+                }
+                remaining -= 1;
+                each(key, value)?;
+            }
+            Ok(None) => return Ok(()),
+            Err(message) => return Err(pyo3::exceptions::PyRuntimeError::new_err(message)),
+        }
+    }
+}
+
+#[cfg(not(Py_GIL_DISABLED))]
+#[inline(always)]
+fn run_once<R>(step: impl FnOnce() -> R) -> R {
+    step()
+}
+
 /// Call `callable` as `callable(*args[..nargs], **{name: value})` through the
 /// vectorcall protocol: `args` holds the positional values, then one value
 /// for each name in `kwnames`. No tuple or dict is built for the call, and

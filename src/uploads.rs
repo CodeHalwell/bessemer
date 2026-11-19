@@ -52,10 +52,91 @@ struct Lifetime {
     _slot: OwnedSemaphorePermit,
 }
 
-/// Kept by the private Python part reader until its duplicated handle closes.
+/// One file part's handle on its request's spool file, as the private Python
+/// reader (`bessemer.request._SpooledPart`) uses it.
+///
+/// Every part of a request shares the request's one descriptor: a part reads
+/// by offset (`os.pread` on [`fileno`](Self::fileno)), and closing a part
+/// lets go of its share only. The descriptor, the spool slot and the disk
+/// bytes go when the last part and the native request have let go, so a
+/// request holds one descriptor however many file parts it has.
 #[pyo3::pyclass(frozen, module = "bessemer._native")]
-struct PythonLease {
-    _file: Arc<SpoolFile>,
+pub(crate) struct SpoolSource {
+    file: std::sync::Mutex<Option<Arc<SpoolFile>>>,
+    /// Where [`read`](Self::read) starts: the Windows reader seeks, then reads.
+    position: AtomicU64,
+}
+
+impl SpoolSource {
+    fn file(&self) -> pyo3::PyResult<Arc<SpoolFile>> {
+        self.file
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("I/O operation on closed file"))
+    }
+}
+
+#[pyo3::pymethods]
+impl SpoolSource {
+    #[cfg(unix)]
+    fn fileno(&self) -> pyo3::PyResult<i32> {
+        use std::os::fd::AsRawFd;
+        Ok(self.file()?.as_raw_fd())
+    }
+
+    fn seek(&self, offset: u64) -> u64 {
+        self.position.store(offset, Ordering::Relaxed);
+        offset
+    }
+
+    /// `count` bytes from the current position, which never moves a cursor
+    /// another part shares.
+    fn read<'py>(
+        &self,
+        py: pyo3::Python<'py>,
+        count: usize,
+    ) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::types::PyBytes>> {
+        let file = self.file()?;
+        let offset = self.position.load(Ordering::Relaxed);
+        let data = py
+            .detach(|| {
+                let mut data = vec![0u8; count];
+                crate::platform::read_exact_at(&file, &mut data, offset).map(|()| data)
+            })
+            .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))?;
+        self.position
+            .store(offset + count as u64, Ordering::Relaxed);
+        Ok(pyo3::types::PyBytes::new(py, &data))
+    }
+
+    #[getter]
+    fn closed(&self) -> bool {
+        self.file.lock().unwrap().is_none()
+    }
+
+    fn close(&self) {
+        let file = self.file.lock().unwrap().take();
+        release(file);
+    }
+}
+
+impl Drop for SpoolSource {
+    fn drop(&mut self) {
+        let file = self.file.get_mut().ok().and_then(Option::take);
+        release(file);
+    }
+}
+
+/// Let go of one Python share of a spool file, counting a file freed by the
+/// collection [`reclaim_dropped_readers`] runs on this thread.
+fn release(file: Option<Arc<SpoolFile>>) {
+    if let Some(last) = file.and_then(Arc::into_inner) {
+        drop(last);
+        if COLLECTING.get() {
+            RECLAIMED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The shortest and longest waits between two collections asked for by
@@ -65,8 +146,9 @@ const RECLAIM_SLOWEST: std::time::Duration = std::time::Duration::from_secs(64);
 
 struct Reclaim {
     last: Option<std::time::Instant>,
-    /// Doubles each time a collection frees nothing, so capacity that is
-    /// full of uploads in use does not cost a collection a second.
+    /// Doubles each time a collection frees no spool file and halves each
+    /// time one does, so capacity that is full of uploads in use does not
+    /// cost a collection a second.
     wait: std::time::Duration,
 }
 
@@ -75,6 +157,14 @@ static RECLAIM: std::sync::Mutex<Reclaim> = std::sync::Mutex::new(Reclaim {
     last: None,
     wait: RECLAIM_SOONEST,
 });
+/// Spool files the running collection freed.
+static RECLAIMED: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// Set on the thread running a reclaiming collection: Python finalizes
+    /// what it collects on that thread.
+    static COLLECTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// Ask Python to collect garbage, off the I/O threads, when an upload has
 /// been refused for capacity.
@@ -86,7 +176,7 @@ static RECLAIM: std::sync::Mutex<Reclaim> = std::sync::Mutex::new(Reclaim {
 /// ever start a collection and the refusals would not end. Readers the
 /// application still holds are untouched: they keep their capacity until it
 /// closes them.
-pub(crate) fn reclaim_dropped_readers(settings: &Settings) {
+pub(crate) fn reclaim_dropped_readers() {
     use std::sync::atomic::Ordering;
     {
         let reclaim = RECLAIM.lock().unwrap();
@@ -97,41 +187,47 @@ pub(crate) fn reclaim_dropped_readers(settings: &Settings) {
     if RECLAIMING.swap(true, Ordering::AcqRel) {
         return;
     }
-    let (slots, budget) = (settings.slots.clone(), settings.budget.clone());
-    let before = (slots.available_permits(), budget.available());
-    tokio::task::spawn_blocking(move || {
-        pyo3::Python::attach(|py| {
-            use pyo3::prelude::*;
-            if let Err(error) = py.import("gc").and_then(|gc| gc.call_method0("collect")) {
-                error.write_unraisable(py, None);
-            }
-        });
-        let freed = slots.available_permits() > before.0 || budget.available() > before.1;
-        let mut reclaim = RECLAIM.lock().unwrap();
-        reclaim.last = Some(std::time::Instant::now());
-        reclaim.wait = if freed {
-            RECLAIM_SOONEST
-        } else {
-            (reclaim.wait * 2).min(RECLAIM_SLOWEST)
-        };
-        RECLAIMING.store(false, Ordering::Release);
-    });
+    tokio::task::spawn_blocking(collect_dropped_readers);
 }
 
+/// Run one reclaiming collection and space out the next. Only spool files
+/// this collection freed count as progress: uploads that finish meanwhile,
+/// and the refused upload's own bytes, are not a reason to collect again.
+fn collect_dropped_readers() {
+    RECLAIMED.store(0, Ordering::Relaxed);
+    COLLECTING.set(true);
+    pyo3::Python::attach(|py| {
+        use pyo3::prelude::*;
+        if let Err(error) = py.import("gc").and_then(|gc| gc.call_method0("collect")) {
+            error.write_unraisable(py, None);
+        }
+    });
+    COLLECTING.set(false);
+    let freed = RECLAIMED.swap(0, Ordering::Relaxed) > 0;
+    let mut reclaim = RECLAIM.lock().unwrap();
+    reclaim.last = Some(std::time::Instant::now());
+    reclaim.wait = if freed {
+        (reclaim.wait / 2).max(RECLAIM_SOONEST)
+    } else {
+        (reclaim.wait * 2).min(RECLAIM_SLOWEST)
+    };
+    RECLAIMING.store(false, Ordering::Release);
+}
+
+/// A Python handle for one file part of `file`: it shares the descriptor
+/// (see [`SpoolSource`]).
 pub(crate) fn python_file<'py>(
     py: pyo3::Python<'py>,
     file: &Arc<SpoolFile>,
 ) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::PyAny>> {
-    use pyo3::prelude::*;
-    let opened = crate::platform::python_file(py, file)?;
-    let lease = pyo3::Py::new(
+    Ok(pyo3::Bound::new(
         py,
-        PythonLease {
-            _file: file.clone(),
+        SpoolSource {
+            file: std::sync::Mutex::new(Some(file.clone())),
+            position: AtomicU64::new(0),
         },
-    )?;
-    opened.setattr("_bessemer_spool_lease", lease)?;
-    Ok(opened)
+    )?
+    .into_any())
 }
 
 /// A spooled multipart body.
@@ -405,6 +501,14 @@ enum Incoming {
 /// client is quiet. Once nothing is buffered either, the upload only waits:
 /// its slot is released for that time and `waiting` remembers where it came
 /// from.
+///
+/// Unlike a buffered body ([`crate::budget::buffer_body`]) it takes no place
+/// in `BodyWaits` while it waits: every spooled upload, waiting or not, holds
+/// one of `Settings::slots` from before its first read until its spool file
+/// is closed ([`SpoolWriter::new`], refused at once when none is free), and
+/// it has written out its buffer before it waits (`Incoming::Flush`). So what
+/// waiting uploads hold is bounded by that slot count, `max_in_flight` a
+/// worker, and by the request byte budget for their form fields.
 async fn next_frame(
     body: &mut Body,
     buffered: bool,
@@ -704,6 +808,142 @@ mod tests {
         assert_eq!(capacity.available_permits(), 1);
         assert_eq!(settings.budget.available(), 1 << 20);
         assert_eq!(memory.available(), 1024);
+    }
+
+    #[tokio::test]
+    async fn python_parts_share_one_descriptor_until_the_last_lets_go() {
+        use pyo3::prelude::*;
+        let mut settings = settings(4096, 4096);
+        settings.slots = Arc::new(Semaphore::new(1));
+        let memory = ByteBudget::new(4096);
+        let mut body =
+            b"--b\r\nContent-Disposition: form-data; name=\"a\"; filename=\"a\"\r\n\r\nfirst\r\n"
+                .to_vec();
+        body.extend_from_slice(b"--b\r\nContent-Disposition: form-data; name=\"b\"; filename=\"b\"\r\n\r\nsecond\r\n--b--\r\n");
+        let spooled = spool(
+            Body::from(body),
+            "b",
+            &settings,
+            64,
+            &memory,
+            &mut Held::default(),
+        )
+        .await
+        .unwrap();
+        let file = spooled.file.clone().unwrap();
+        Python::attach(|py| {
+            let first = python_file(py, &file).unwrap();
+            let second = python_file(py, &file).unwrap();
+            drop(spooled);
+            drop(file);
+            #[cfg(unix)]
+            {
+                let descriptor = |source: &Bound<'_, PyAny>| {
+                    source
+                        .call_method0("fileno")
+                        .unwrap()
+                        .extract::<i32>()
+                        .unwrap()
+                };
+                assert_eq!(descriptor(&first), descriptor(&second));
+            }
+            // Each part reads at its own position.
+            let read = |source: &Bound<'_, PyAny>, offset: usize, count: usize| {
+                source.call_method1("seek", (offset,)).unwrap();
+                source
+                    .call_method1("read", (count,))
+                    .unwrap()
+                    .extract::<Vec<u8>>()
+                    .unwrap()
+            };
+            assert_eq!(read(&first, 0, 5), b"first");
+            assert_eq!(read(&second, 5, 6), b"second");
+            first.call_method0("close").unwrap();
+            assert!(first.getattr("closed").unwrap().extract::<bool>().unwrap());
+            assert!(first.call_method1("read", (1,)).is_err());
+            // The other part, and the request's slot, outlive the first.
+            assert_eq!(read(&second, 5, 6), b"second");
+            assert_eq!(settings.slots.available_permits(), 0);
+            second.call_method0("close").unwrap();
+            assert_eq!(settings.slots.available_permits(), 1);
+            assert_eq!(settings.budget.available(), 4096);
+        });
+    }
+
+    #[tokio::test]
+    async fn a_reclaiming_collection_counts_only_the_files_it_frees() {
+        use pyo3::prelude::*;
+        let mut settings = settings(4096, 4096);
+        settings.slots = Arc::new(Semaphore::new(2));
+        let memory = ByteBudget::new(4096);
+        let mut files = Vec::new();
+        for _ in 0..2 {
+            let spooled = spool(
+                Body::from(multipart(&[7; 16])),
+                "b",
+                &settings,
+                64,
+                &memory,
+                &mut Held::default(),
+            )
+            .await
+            .unwrap();
+            files.push(spooled.file.unwrap());
+        }
+        let wait = || RECLAIM.lock().unwrap().wait;
+        let cycled = files.pop().unwrap();
+        let unrelated = files.pop().unwrap();
+        // An upload that finishes on another thread while the collection
+        // runs is not the collection's progress.
+        let scope = Python::attach(|py| {
+            let scope = pyo3::types::PyDict::new(py);
+            scope
+                .set_item("source", python_file(py, &unrelated).unwrap())
+                .unwrap();
+            py.run(
+                c"
+import gc, threading
+collector = threading.get_ident()
+done = []
+def hook(phase, info):
+    if phase == 'start' and threading.get_ident() == collector and not done:
+        done.append(True)
+        closing = threading.Thread(target=source.close)
+        closing.start()
+        closing.join()
+gc.callbacks.append(hook)
+",
+                Some(&scope),
+                None,
+            )
+            .unwrap();
+            scope.unbind()
+        });
+        drop(unrelated);
+        RECLAIM.lock().unwrap().wait = RECLAIM_SOONEST * 4;
+        collect_dropped_readers();
+        Python::attach(|py| {
+            let scope = scope.bind(py);
+            assert_eq!(scope.get_item("done").unwrap().unwrap().len().unwrap(), 1);
+            py.import("gc")
+                .unwrap()
+                .getattr("callbacks")
+                .unwrap()
+                .call_method1("remove", (scope.get_item("hook").unwrap().unwrap(),))
+                .unwrap();
+        });
+        assert_eq!(settings.slots.available_permits(), 1);
+        assert_eq!(wait(), RECLAIM_SOONEST * 8);
+        // A reader dropped in a reference cycle, freed by the collection.
+        Python::attach(|py| {
+            let cycle = pyo3::types::PyList::new(py, [python_file(py, &cycled).unwrap()]).unwrap();
+            cycle.append(&cycle).unwrap();
+        });
+        drop(cycled);
+        assert_eq!(settings.slots.available_permits(), 1);
+        collect_dropped_readers();
+        assert_eq!(settings.slots.available_permits(), 2);
+        assert_eq!(wait(), RECLAIM_SOONEST * 4);
     }
 
     #[tokio::test]

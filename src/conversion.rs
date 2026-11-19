@@ -1,5 +1,6 @@
 //! Bounded JSON conversion. Python integer precision is preserved in both directions.
 
+use bessemer_codec::runtime::dict_try_for_each;
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
@@ -215,21 +216,26 @@ fn encode_value(
         }
         budget.take(2 + dict.len().saturating_sub(1) + dict.len())?;
         out.push(b'{');
-        for (index, (key, value)) in dict.iter().enumerate() {
+        let mut first = true;
+        // Not `dict.iter()`, which panics if the dict changes size while it
+        // is walked (Python code run by a conversion here, or another thread
+        // on a free-threaded build): that is a clean error instead.
+        dict_try_for_each(dict, |key, value| {
             let key = key
                 .cast::<PyString>()
                 .map_err(|_| PyTypeError::new_err("JSON object keys must be strings"))?;
             let key = key.to_str()?;
             budget.node()?;
             budget.take(json_string_size(key))?;
-            if index > 0 {
+            if !first {
                 out.push(b',');
             }
+            first = false;
             serde_json::to_writer(&mut *out, key)
                 .map_err(|_| PyValueError::new_err("invalid JSON response"))?;
             out.push(b':');
-            encode_value(&value, depth + 1, budget, out)?;
-        }
+            encode_value(&value, depth + 1, budget, out)
+        })?;
         out.push(b'}');
         return Ok(());
     }
@@ -334,7 +340,8 @@ fn convert(value: &Bound<'_, PyAny>, depth: usize, budget: &mut Budget) -> PyRes
         }
         let mut output = Map::new();
         budget.take(2 + dict.len().saturating_sub(1) + dict.len())?;
-        for (key, value) in dict.iter() {
+        // As in `encode_value`: a dict that changes size is an error.
+        dict_try_for_each(dict, |key, value| {
             let key = key
                 .cast::<PyString>()
                 .map_err(|_| PyTypeError::new_err("JSON object keys must be strings"))?;
@@ -342,7 +349,8 @@ fn convert(value: &Bound<'_, PyAny>, depth: usize, budget: &mut Budget) -> PyRes
             budget.node()?;
             budget.take(json_string_size(key))?;
             output.insert(key.to_owned(), convert(&value, depth + 1, budget)?);
-        }
+            Ok(())
+        })?;
         return Ok(Value::Object(output));
     }
     if let Ok(list) = value.cast::<PyList>() {
@@ -417,6 +425,9 @@ pub(crate) enum Argument {
     Bool(bool),
     /// An integer outside `i64`, as its canonical digits (at most 4096).
     Big(String),
+    /// A value shared with the request, such as verified JWT claims, so it is
+    /// not copied to be handed over.
+    Shared(std::sync::Arc<Value>),
 }
 
 impl From<Value> for Argument {
@@ -428,6 +439,7 @@ impl From<Value> for Argument {
 pub(crate) fn argument_to_python(py: Python<'_>, value: &Argument) -> PyResult<Py<PyAny>> {
     match value {
         Argument::Json(value) => json_to_python(py, value),
+        Argument::Shared(value) => json_to_python(py, value),
         Argument::Int(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Argument::Float(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
         Argument::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any().unbind()),
@@ -532,6 +544,23 @@ mod tests {
     }
 
     #[test]
+    fn shared_arguments_convert_like_owned_ones_without_a_copy() {
+        let claims: Value = serde_json::from_str(
+            r#"{"sub":"u1","nested":{"ids":[1,2.5,18446744073709551617]},"ok":true}"#,
+        )
+        .unwrap();
+        let shared = std::sync::Arc::new(claims.clone());
+        let argument = Argument::Shared(shared.clone());
+        // Handing claims to a route only adds a reference.
+        assert_eq!(std::sync::Arc::strong_count(&shared), 2);
+        Python::attach(|py| {
+            let from_shared = argument_to_python(py, &argument).unwrap();
+            let from_owned = argument_to_python(py, &Argument::Json(claims)).unwrap();
+            assert!(from_shared.bind(py).eq(from_owned.bind(py)).unwrap());
+        });
+    }
+
+    #[test]
     fn client_objects_cannot_spoof_internal_number_tokens() {
         for input in [
             br#"{"$serde_json::private::Number":"123"}"#.as_slice(),
@@ -582,6 +611,59 @@ mod tests {
         Python::attach(|py| {
             let value = PyString::new(py, "x".repeat(4096).as_str());
             assert!(python_to_json_limited(value.as_any(), 0, 128).is_err());
+        });
+    }
+
+    /// Python code run while a response dict is converted (here an
+    /// application's "strict" codec error handler, reached by a lone
+    /// surrogate; on a free-threaded build also another thread) can change
+    /// the dict's size. That is an error, not a panic inside PyO3's dict
+    /// iterator.
+    #[test]
+    fn a_dict_that_changes_size_while_converted_is_an_error() {
+        Python::attach(|py| {
+            let scope = PyDict::new(py);
+            py.run(
+                cr#"import codecs
+targets = []
+def handler(error):
+    for target, value in targets:
+        if error.object is target:
+            value.popitem()
+            return ('?', error.end)
+    raise error
+def value():
+    # A new string each time: a successful conversion caches its UTF-8.
+    key = 'b\ud800' + str(len(targets))
+    value = {'a': 1, key: 2, 'c': 3, 'd': 4}
+    targets.append((key, value))
+    return value
+codecs.register_error('strict', handler)
+"#,
+                Some(&scope),
+                None,
+            )
+            .unwrap();
+            let make = scope.get_item("value").unwrap().unwrap();
+            let encoded = encode_json_limited(&make.call0().unwrap(), 1 << 20);
+            let converted = python_to_json(&make.call0().unwrap(), 0);
+            let shrunk = make.call0().unwrap();
+            let nested = python_to_json(&PyList::new(py, [&shrunk]).unwrap(), 0);
+            py.run(
+                c"codecs.register_error('strict', codecs.strict_errors)",
+                Some(&scope),
+                None,
+            )
+            .unwrap();
+            for error in [
+                encoded.unwrap_err(),
+                converted.unwrap_err(),
+                nested.unwrap_err(),
+            ] {
+                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                assert!(error.to_string().contains("changed size"), "{error}");
+            }
+            assert_eq!(shrunk.len().unwrap(), 3);
         });
     }
 

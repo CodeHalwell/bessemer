@@ -1,0 +1,68 @@
+{
+ "_comment": "Test-only Entra-shaped v1.0 access tokens (iss https://sts.windows.net/{tid}/) checked against the v2.0 multi-tenant key set. One throwaway RSA key, generated in memory and never stored, is published under two kids: multi with the {tenantid} template issuer, tenant1 with tenant1's concrete v2.0 issuer. Segments are split so they are not mistaken for live credentials.",
+ "tenants": [
+  "11111111-1111-4111-8111-111111111111",
+  "22222222-2222-4222-8222-222222222222"
+ ],
+ "issuers": [
+  "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0",
+  "https://login.microsoftonline.com/22222222-2222-4222-8222-222222222222/v2.0",
+  "https://sts.windows.net/11111111-1111-4111-8111-111111111111/",
+  "https://sts.windows.net/22222222-2222-4222-8222-222222222222/"
+ ],
+ "jwks": {
+  "keys": [
+   {
+    "kty": "RSA",
+    "use": "sig",
+    "n": "nYBzV9P0swtuCL-oAnmOnd9rSKMdOTjaMBFtuLR3Cj51DAhK57p38pnAsw9Q9l4vsl7pFljIRduQi-9OcYOtu0J-6mOGl5ALqJxdkMTjvdTH_VZW1ShfQ9POHVUQGYoBnt-s5uE7jub4T9_cGl63LYPCDSl48_FyQdBCVH-lyymHMStUgVbg2J0bdcgrzygwLe2fgB96QEJM01sz5pmlwkrXP6G7Et_dZVSVnKbFxxJ3snluEfGtJWrJdNLvUWfSSsMYh7uTXg5AsJSzddsxBoYho2IfBHgz4djVy-2YOCRPnRMjLmutabi3p8D9Xh2M9WXK26--ArcKMdK14AJpeQ",
+    "e": "AQAB",
+    "kid": "multi",
+    "issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"
+   },
+   {
+    "kty": "RSA",
+    "use": "sig",
+    "n": "nYBzV9P0swtuCL-oAnmOnd9rSKMdOTjaMBFtuLR3Cj51DAhK57p38pnAsw9Q9l4vsl7pFljIRduQi-9OcYOtu0J-6mOGl5ALqJxdkMTjvdTH_VZW1ShfQ9POHVUQGYoBnt-s5uE7jub4T9_cGl63LYPCDSl48_FyQdBCVH-lyymHMStUgVbg2J0bdcgrzygwLe2fgB96QEJM01sz5pmlwkrXP6G7Et_dZVSVnKbFxxJ3snluEfGtJWrJdNLvUWfSSsMYh7uTXg5AsJSzddsxBoYho2IfBHgz4djVy-2YOCRPnRMjLmutabi3p8D9Xh2M9WXK26--ArcKMdK14AJpeQ",
+    "e": "AQAB",
+    "kid": "tenant1",
+    "issuer": "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0"
+   }
+  ]
+ },
+ "v1_template_tenant1": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMS8iLCAidGlkIjogIjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsICJ2ZXIiOiAiMS4wIn0",
+  "f43cMMj65vQCYpOzycR14byXrSPdiZzCySxdRPbeWYiD7tNCPVDRwi8evipx_RpHdI05-KFqhndSsw3-OPDRnGukCmVXSM_G4qCiaGndw8766vM4xx0q60sbB_0DD_HNb56uLs0OfuHIFM7O5HnUyH5F2PlNM7qYb_ulYVU4pobf-lHj00fA8veg-wAImCvlz8UBs-aaxm2a_yngTxCxreWaM_QwM5XGqAGYSXI1stMnfUBfxSAI0reDdCcmKPorPBBDGa4jr7Lgsj_5GevZnHHtfD3OpBj-4dlo4QBPlj4-xI_i34b4PF1XoqjBK7-bKpYr7JtcyQlUs3MLBiGTYQ"
+ ],
+ "v1_tenant1_key_for_tenant1": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogInRlbmFudDEiLCAidHlwIjogIkpXVCJ9",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMS8iLCAidGlkIjogIjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsICJ2ZXIiOiAiMS4wIn0",
+  "C676dnaNmyMGPxZXqarO8BLlQgeoDAPDa-dfGBuBz9wKsQt-ZMhsjtfMv5vuKt5JQYkOrIEd25T0b5gjP9hiVaALZf9QfX2Lehr2N9VrDLzXHDowPs7Zo13u6TvYVc569kxCJfuHYTvXgtElSdSlSfy0cjJgLXML-jrZuUn5NgYSNOw-zGnthtFnDcGYuLpaYM_BxJdnxVVLty8RCARyoBC0miPvTS9VwRfG88pn635KebE9zMmHByZ24edqvD5mNu7DAeUlhNWzyJxlSU-KubGymPKdInHL8EdUkJKLkUKKQL0kccDZLCVJvN4eAs8q5dt4cXvrDDQ2C2yBxFJzUw"
+ ],
+ "v1_tenant1_key_for_tenant2": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogInRlbmFudDEiLCAidHlwIjogIkpXVCJ9",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMi8iLCAidGlkIjogIjIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMiIsICJ2ZXIiOiAiMS4wIn0",
+  "PlGrKFOTbEIvsZr17D4rPTmHRGsyh2bQR168HTmdgkG8ZvetA_sfgKLUP1pTHV7_9-EtOhdM-eiL00BW5jNxNfh7vX-oAp4DeM67zE_J1oifyWF6SsM7VKafiYklU0O--GkDkjbAW68n6qTpRhpsXiN2iSLay5cVjO1Kj759Y-ieQ62DZzb6FMp-J2Fy46vxCO8CcwXzo7o_j_qu98qLe-cTDIoqbmos0MmZKuhxgGYNhzZJzDp70J4tEI0j2bji4-9bTzkLhHhFX2gf3xke8Ie8XTPXBbN8fkc7to0tUGX1AoH6wuyaKGDHFlRf_PjP-kX1zxzj440RG7Rq0JJpnw"
+ ],
+ "v1_iss_not_tid": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMi8iLCAidGlkIjogIjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsICJ2ZXIiOiAiMS4wIn0",
+  "V4R9Eg9uhsetf26LMM_CIs2cTV6AQRV6A3VglOp3U03d-HrPo83ZGYzqrQcb71BXTyZklpIRd9gh1davAPoppXsGJrdF2JOnIgjXTWdimwVxBOCtYyTAu5rKm-TpH5rDIBTU_vq5yYQRPcMuny4xyQj2aGlCJegFDaroLm_1GSnXYa5fdkFuSp8bfM0XJBYiMmCkgxyzCj64LRaEwSN5W0Pgo3735c4PIQbrNEh7wN0QxhrxvmKrKloi7M7uwGEkclBynqyHfkcLT9C_TtK3U3iOG9XSbPupX1A9272B_cyaMid2EjRgYuH1sT4nZGtZdGrvxFgedHocepzr3FMmmA"
+ ],
+ "v1_template_without_tid": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vc3RzLndpbmRvd3MubmV0LzExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMS8iLCAidmVyIjogIjEuMCJ9",
+  "dzdwsVYX2JkcM8SCHqpPkplgV2VX8HgDrjNSF-jcLSA17NRjmsLREAr6253xLyU6GD5M-lVjoiTyUIjOncbbYcJax7ubp7PIFlrTmXrDQxO_Ucd2AsF50uy-bwsCCbEPQMNCHV6YmaOJ7yRwPN_xaReJ5xPmW_VAbMXPRmVS0Cf-HDV6WtGcX_AGxOVLMALu8lWWDPew777biAZ7QkjSlQap7yoMaRBSbMwRW2HLa24x9EoufMxFwloeBYt3MKeYyQRU1ZvUHFoXv7mKOarwDPmOq4rxVtYkN72SiMAZ6PhwLWtMrECUu1_Vfuavcq5nEn8hOFwZndAOnUlIi7HfUg"
+ ],
+ "v2_template_tenant2": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogIm11bHRpIiwgInR5cCI6ICJKV1QifQ",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8yMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIvdjIuMCIsICJ0aWQiOiAiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwgInZlciI6ICIyLjAifQ",
+  "YPjkz6is3MxqkYW8skmky9agHx74lRLzw0RSdLHcDK_RziXGohPVdAUKPyaInOt3JtFpFg2agb_QTRfERhQ-ZRI2Id9IA1WgnTAo7fzn4Wp4bZq8cx6Okbpfa7TbvgoDt_vPc1d7GTC8YN2JSo6zypirEnvVI9eI2XdIEC6Sano8cev1MzJ7mi4VDxU-aP0JWFRNz7Wsxplbi2hnn9W1TBjbo-jZbkmHJEbjtGRsC0uvZ-1fGvIY8xNJPyNv-PGjMIxS9sBhyD24UYthcoUnrGPB8u2Dj4XI3Dbi8j00AoF2kXE6XkpAi2_rtDm51qLSvBUuw4C5Q-7Lh2zS94YkZw"
+ ],
+ "v2_tenant1_key_for_tenant2": [
+  "eyJhbGciOiAiUlMyNTYiLCAia2lkIjogInRlbmFudDEiLCAidHlwIjogIkpXVCJ9",
+  "eyJzdWIiOiAiZW50cmEiLCAiYXVkIjogImFwaSIsICJleHAiOiA0MDAwMDAwMDAwLCAic2NwIjogIml0ZW1zLnJlYWQiLCAiaXNzIjogImh0dHBzOi8vbG9naW4ubWljcm9zb2Z0b25saW5lLmNvbS8yMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIvdjIuMCIsICJ0aWQiOiAiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwgInZlciI6ICIyLjAifQ",
+  "OssdMobkp-rnZd1zhZk3zkHxWXP81-7fhtMuntfDWE56ov89FyxVrmu0xyAchFAwHYOIBkrR3hqGc8QFEkeR-X2GMM5Wb_Lyf1XGbvk9b0f3mVjqRoAFEJ5oyz4Nrt2_8VlYXvZ6kXVOrzpC2UWYFrDyCbGrHhEJsDYJzku-4TMpyvlHh3h7i0ytpeRloif1ifMbI8azTa5dSwZeDbv0C4r0FencD94HbLcYrYUIfmf0gbvPbBR7gRiL-A_Os5muiilgv_RBq23FcYlFhb-E4ahm2V_GA6fiNlVEURtem9PckCclQiZ8VvTqwD-jf4ZrLFO0nT3NOOWJFI7n0vQGTQ"
+ ]
+}

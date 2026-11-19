@@ -1,15 +1,20 @@
 """Native static file serving."""
 
 import gzip
+import importlib.util
 import os
+import select
 import shutil
+import socket
 import tempfile
+import time
 import unittest
 from email.utils import formatdate
 
-from bessemer import App, Compression
+from bessemer import App, Compression, FileResponse
 from bessemer.testclient import TestClient
 
+H2 = importlib.util.find_spec("h2") is not None
 CSS = b"body { color: red; }\n" * 200
 
 
@@ -258,6 +263,134 @@ class StaticFileTests(unittest.TestCase):
             app.static("/x", self.root, cache_control="bad\nvalue")
         with self.assertRaises(TypeError):
             app.static("/x", self.root, html="yes")
+
+
+class _StalledH2:
+    """A prior-knowledge HTTP/2 connection that grants no stream window, so
+    every response body it asks for stays unsent."""
+
+    def __init__(self, port):
+        from h2.config import H2Configuration
+        from h2.connection import H2Connection
+        from h2.settings import SettingCodes
+
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.connection = H2Connection(
+            config=H2Configuration(client_side=True, header_encoding="utf-8")
+        )
+        self.connection.initiate_connection()
+        self.connection.update_settings({SettingCodes.INITIAL_WINDOW_SIZE: 0})
+        self.statuses = {}
+        self.socket.sendall(self.connection.data_to_send())
+
+    def request(self, path):
+        stream = self.connection.get_next_available_stream_id()
+        headers = [(":method", "GET"), (":scheme", "http")]
+        headers += [(":authority", "t"), (":path", path)]
+        self.connection.send_headers(stream, headers, end_stream=True)
+        self.socket.sendall(self.connection.data_to_send())
+        return stream
+
+    def statuses_of(self, streams, timeout=30):
+        """Read until every stream has its response head."""
+        from h2.events import ResponseReceived
+
+        deadline = time.monotonic() + timeout
+        while not all(stream in self.statuses for stream in streams):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"responses missing: {self.statuses}")
+            if select.select([self.socket], [], [], remaining)[0]:
+                chunk = self.socket.recv(65536)
+                if not chunk:
+                    raise AssertionError("HTTP/2 connection ended")
+                for event in self.connection.receive_data(chunk):
+                    if isinstance(event, ResponseReceived):
+                        status = dict(event.headers)[":status"]
+                        self.statuses[event.stream_id] = int(status)
+                self.socket.sendall(self.connection.data_to_send())
+        return [self.statuses[stream] for stream in streams]
+
+    def close(self):
+        self.socket.close()
+
+
+def _descriptors_on(path):
+    """Descriptors this process holds on ``path``, or None without /proc."""
+    if not os.path.isdir("/proc/self/fd"):
+        return None
+    count = 0
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            count += os.readlink(f"/proc/self/fd/{name}") == path
+        except OSError:
+            pass
+    return count
+
+
+class OpenFileBoundTests(unittest.TestCase):
+    @unittest.skipUnless(H2, "requires the h2 package")
+    def test_stalled_streams_share_descriptors_and_the_bound_is_on_distinct_files(self):
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        large = os.path.join(root, "large.bin")
+        payload = os.urandom(256 * 1024)
+        with open(large, "wb") as file:
+            file.write(payload)
+        for index in range(4):
+            with open(os.path.join(root, f"f{index}.txt"), "wb") as file:
+                file.write(b"file %d\n" % index)
+        app = App()
+        app.static("/assets", root)
+
+        @app.get("/download")
+        async def download():
+            return FileResponse(large)
+
+        # The bound is `max_connections` distinct files per process.
+        options = {"max_connections": 4, "request_timeout": 30.0}
+        with TestClient(app, server_options=options) as client:
+            tag = client.get("/assets/f3.txt").headers["etag"]
+            stalled = _StalledH2(client._port)
+            try:
+                # Sixty bodies of one file, from a mount and from a route,
+                # none of them sent: more than the bound, all answered, and
+                # all reading through one descriptor.
+                streams = [stalled.request("/assets/large.bin") for _ in range(30)]
+                streams += [stalled.request("/download") for _ in range(30)]
+                self.assertEqual(stalled.statuses_of(streams), [200] * 60)
+                held = _descriptors_on(large)
+                if held is not None:
+                    self.assertEqual(held, 1)
+                self.assertEqual(client.get("/assets/f0.txt").status_code, 200)
+                # Three more distinct files fill the bound. Another file is
+                # refused while they are open; a file already open, a
+                # conditional request and HEAD are not.
+                streams = [stalled.request(f"/assets/f{i}.txt") for i in range(3)]
+                self.assertEqual(stalled.statuses_of(streams), [200] * 3)
+                refused = client.get("/assets/f3.txt")
+                self.assertEqual(refused.status_code, 503)
+                self.assertEqual(
+                    refused.json(), {"detail": "Static file capacity is full"}
+                )
+                self.assertEqual(client.get("/assets/f1.txt").status_code, 200)
+                self.assertEqual(client.get("/download").content, payload)
+                revalidated = client.get(
+                    "/assets/f3.txt", headers={"If-None-Match": tag}
+                )
+                self.assertEqual(revalidated.status_code, 304)
+                self.assertEqual(client.head("/assets/f3.txt").status_code, 200)
+            finally:
+                stalled.close()
+            # The files come back when the streams are gone.
+            deadline = time.monotonic() + 30
+            while client.get("/assets/f3.txt").status_code != 200:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            if _descriptors_on(large) is not None:
+                while _descriptors_on(large):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.05)
 
 
 if __name__ == "__main__":

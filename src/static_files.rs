@@ -6,7 +6,12 @@
 //! precompressed `.br` or `.gz` siblings when the client accepts them. Bodies
 //! stream from disk in fixed-size chunks, so memory per response is bounded
 //! whatever the file size.
+//!
+//! A body, a mount's or a route's `FileResponse`, reads its file through the
+//! process's [`OpenFiles`] table: one descriptor per distinct file being
+//! sent, shared by every response sending it and read by position.
 
+use crate::compression::{Representation, Reselect};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
@@ -14,41 +19,254 @@ use axum::{
 };
 use http_body::{Frame, SizeHint};
 use std::{
+    collections::HashMap,
     fs::File,
-    io::SeekFrom,
+    future::Future,
     path::{Component, Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc, LazyLock, Mutex, PoisonError, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll, ready},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::io::{AsyncRead, AsyncSeekExt, ReadBuf};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const CHUNK: usize = 64 * 1024;
 
-#[derive(Debug)]
+/// The files with a response body in progress, each held open once.
+///
+/// Static responses run no handler, and a `FileResponse` body outlives its
+/// handler's admission, so without a bound HTTP/2 streams that stop reading
+/// could each hold a descriptor and exhaust the process's with a handful of
+/// connections. A body holds its file's entry rather than a descriptor of its
+/// own, so a hundred streams sending one file cost one descriptor, and the
+/// bound is on distinct files: a body for a file that is not open yet is
+/// refused with `503` while `capacity` files are. The capacity is the
+/// server's `max_connections` ([`limit_open_files`]): HTTP/1.1 sends one
+/// response at a time per connection, so it never reaches the bound, and
+/// HTTP/2 cannot hold more files open than HTTP/1.1 connections could.
+///
+/// Sharing a descriptor leaves nothing to bound the bodies themselves, and
+/// each is given its first chunk by the task that opened it, before anything
+/// asks for it. An HTTP/2 stream with no window never asks, so those chunks
+/// are counted too: at most `capacity` bodies hold one, and a body beyond
+/// that reads its first chunk when it is first polled, like every later one.
+pub(crate) struct OpenFiles {
+    capacity: AtomicUsize,
+    files: Mutex<HashMap<FileKey, Weak<SharedFile>>>,
+    /// Bodies holding a first chunk that nothing has asked for yet.
+    first_chunks: AtomicUsize,
+}
+
+/// One table per process, since descriptors are a per-process resource.
+static OPEN_FILES: LazyLock<Arc<OpenFiles>> = LazyLock::new(|| OpenFiles::new(1024));
+
+/// Size the process's table of open files; called with `max_connections`
+/// when a server is built.
+pub(crate) fn limit_open_files(max_connections: usize) {
+    OPEN_FILES
+        .capacity
+        .store(max_connections.max(1), Ordering::Relaxed);
+}
+
+impl OpenFiles {
+    fn new(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            capacity: AtomicUsize::new(capacity.max(1)),
+            files: Mutex::new(HashMap::new()),
+            first_chunks: AtomicUsize::new(0),
+        })
+    }
+
+    /// Take a place for a first chunk read ahead of its body's first poll,
+    /// if fewer than `capacity` bodies hold one.
+    fn hold_first_chunk(&self) -> bool {
+        let capacity = self.capacity.load(Ordering::Relaxed);
+        self.first_chunks
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+                (held < capacity).then_some(held + 1)
+            })
+            .is_ok()
+    }
+
+    /// The shared entry for the file just opened as `file`, or `None` when
+    /// that file is not open yet and the table is full. When it is open
+    /// already, `file` is closed and the open descriptor used: both name the
+    /// same inode, so they read the same bytes.
+    fn share(
+        self: &Arc<Self>,
+        file: File,
+        metadata: &std::fs::Metadata,
+    ) -> Option<Arc<SharedFile>> {
+        let key = file_key(metadata);
+        let mut files = self.files.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(shared) = files.get(&key).and_then(Weak::upgrade) {
+            return Some(shared);
+        }
+        let capacity = self.capacity.load(Ordering::Relaxed);
+        if files.len() >= capacity {
+            // An entry whose last body is being dropped can linger briefly.
+            files.retain(|_, entry| entry.strong_count() > 0);
+            if files.len() >= capacity {
+                return None;
+            }
+        }
+        let shared = Arc::new(SharedFile {
+            file,
+            key,
+            table: self.clone(),
+        });
+        files.insert(key, Arc::downgrade(&shared));
+        Some(shared)
+    }
+
+    #[cfg(test)]
+    fn open(&self) -> usize {
+        let files = self.files.lock().unwrap();
+        files
+            .values()
+            .filter(|entry| entry.strong_count() > 0)
+            .count()
+    }
+
+    #[cfg(test)]
+    fn first_chunks(&self) -> usize {
+        self.first_chunks.load(Ordering::Relaxed)
+    }
+}
+
+/// A body's first chunk, read before the body was polled, holding its place
+/// in [`OpenFiles::first_chunks`] until it is handed over or dropped.
+struct FirstChunk {
+    bytes: Bytes,
+    table: Arc<OpenFiles>,
+}
+
+impl Drop for FirstChunk {
+    fn drop(&mut self) {
+        self.table.first_chunks.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// An open file in [`OpenFiles`], closed with its last body.
+struct SharedFile {
+    file: File,
+    key: FileKey,
+    table: Arc<OpenFiles>,
+}
+
+impl Drop for SharedFile {
+    fn drop(&mut self) {
+        let mut files = self
+            .table
+            .files
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Unless a new open of the same file has replaced this entry.
+        if files
+            .get(&self.key)
+            .is_some_and(|entry| entry.strong_count() == 0)
+        {
+            files.remove(&self.key);
+        }
+    }
+}
+
+/// A file's identity: its device and inode, taken from the opened
+/// descriptor, so a path replaced by another file is a new entry while the
+/// responses already sending the old one finish with the old one.
+#[cfg(unix)]
+type FileKey = (u64, u64);
+
+#[cfg(unix)]
+fn file_key(metadata: &std::fs::Metadata) -> FileKey {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+/// Without a portable file identity each body is its own entry, so the
+/// bound counts responses rather than files.
+#[cfg(not(unix))]
+type FileKey = u64;
+
+#[cfg(not(unix))]
+fn file_key(_: &std::fs::Metadata) -> FileKey {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(unix)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+}
+
+/// Up to `want` bytes at `offset`; fewer only at the end of the file.
+fn read_chunk(file: &File, offset: u64, want: usize) -> std::io::Result<Bytes> {
+    let mut buffer = vec![0; want];
+    let mut filled = 0;
+    while filled < want {
+        match read_at(file, &mut buffer[filled..], offset + filled as u64) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    buffer.truncate(filled);
+    Ok(Bytes::from(buffer))
+}
+
+fn chunk_len(remaining: u64) -> usize {
+    usize::try_from(remaining).map_or(CHUNK, |left| left.min(CHUNK))
+}
+
+/// The request headers a file response depends on, copied for the blocking
+/// pool.
+fn conditions(headers: &HeaderMap) -> HeaderMap {
+    let mut kept = HeaderMap::new();
+    for name in [
+        header::IF_NONE_MATCH,
+        header::IF_MODIFIED_SINCE,
+        header::RANGE,
+        header::IF_RANGE,
+        header::ACCEPT_ENCODING,
+    ] {
+        for value in headers.get_all(&name) {
+            kept.append(name.clone(), value.clone());
+        }
+    }
+    kept
+}
+
+fn capacity_full() -> Response {
+    crate::capacity_response("Static file capacity is full", false)
+}
+
+fn internal_error() -> Response {
+    crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+}
+
 pub(crate) struct StaticDir {
     root: PathBuf,
     root_fd: Arc<RootHandle>,
     html: bool,
     cache_control: Option<HeaderValue>,
-    /// One permit per response of this mount that is in progress. Static
-    /// responses run no handler and so take no admission slot; without a
-    /// bound, HTTP/2 streams could each hold a file open and exhaust the
-    /// process's descriptors with a handful of connections.
-    slots: Arc<Semaphore>,
+    /// The process's table of open files, shared with every other mount and
+    /// with `FileResponse` bodies.
+    open: Arc<OpenFiles>,
 }
 
 impl StaticDir {
-    /// `max_open` is how many responses of this mount may be in progress at
-    /// once: the server's connection limit, so HTTP/1 is never affected and
-    /// HTTP/2 cannot hold more files open than there may be connections.
     pub(crate) fn new(
         directory: &str,
         html: bool,
         cache_control: Option<&str>,
-        max_open: usize,
     ) -> Result<Self, String> {
         let root = std::fs::canonicalize(directory)
             .map_err(|_| format!("static directory does not exist: {directory}"))?;
@@ -66,25 +284,75 @@ impl StaticDir {
             root_fd: Arc::new(root_fd),
             html,
             cache_control,
-            slots: Arc::new(Semaphore::new(max_open.clamp(1, Semaphore::MAX_PERMITS))),
+            open: OPEN_FILES.clone(),
         })
     }
 
-    pub(crate) async fn serve(&self, relative: &str, uri: &Uri, headers: &HeaderMap) -> Response {
+    pub(crate) async fn serve(
+        self: &Arc<Self>,
+        relative: &str,
+        uri: &Uri,
+        headers: &HeaderMap,
+        head: bool,
+    ) -> Response {
         let Some(cleaned) = clean(relative) else {
             return not_found();
         };
-        // Taken before any file is opened and held by the body until it has
-        // been sent or dropped.
-        let Ok(slot) = self.slots.clone().try_acquire_owned() else {
-            return crate::capacity_response("Static file capacity is full", false);
-        };
-        let Some((identity, metadata, directory, logical)) = self.resolve(&cleaned).await else {
+        // Relative links in an index page resolve against its directory, so
+        // the URL must end in a slash before the index is served.
+        let needs_slash = !relative.is_empty() && !relative.ends_with('/');
+        let request = conditions(headers);
+        let files = self.clone();
+        let uri = uri.clone();
+        // Resolving, probing siblings, opening, validating and the first
+        // read are one trip to the blocking pool.
+        tokio::task::spawn_blocking(move || {
+            files.respond(cleaned, needs_slash, uri, request, head, None)
+        })
+        .await
+        .unwrap_or_else(|_| internal_error())
+    }
+
+    /// `exact` is as for [`not_modified`]. Runs on the blocking pool.
+    fn respond(
+        self: &Arc<Self>,
+        cleaned: PathBuf,
+        needs_slash: bool,
+        uri: Uri,
+        headers: HeaderMap,
+        head: bool,
+        exact: Option<bool>,
+    ) -> Response {
+        let mut response = self.select(&cleaned, needs_slash, &uri, &headers, head, exact);
+        // A 304 chosen by comparing If-None-Match weakly may stand for another
+        // representation than the one this client is sent; compression,
+        // which knows, can have it selected again.
+        if exact.is_none()
+            && response.status() == StatusCode::NOT_MODIFIED
+            && headers.contains_key(header::IF_NONE_MATCH)
+            && let Some(representation) = response.extensions_mut().get_mut::<Representation>()
+        {
+            let files = self.clone();
+            representation.reselect = Some(Reselect::new(move |weak| {
+                files.respond(cleaned, needs_slash, uri, headers, head, Some(weak))
+            }));
+        }
+        response
+    }
+
+    fn select(
+        &self,
+        cleaned: &Path,
+        needs_slash: bool,
+        uri: &Uri,
+        headers: &HeaderMap,
+        head: bool,
+        exact: Option<bool>,
+    ) -> Response {
+        let Some((identity, metadata, directory, logical)) = self.resolve(cleaned) else {
             return not_found();
         };
-        if directory && !relative.is_empty() && !relative.ends_with('/') {
-            // Relative links in an index page resolve against its directory,
-            // so the URL must end in a slash before the index is served.
+        if directory && needs_slash {
             return redirect_to_directory(uri);
         }
         let mut response_headers = HeaderMap::new();
@@ -94,39 +362,35 @@ impl StaticDir {
         }
 
         // Choose the representation first: validators, Vary and the body all
-        // belong to it, and conditional requests are judged against it.
-        let (variants_exist, encoded) = self.precompressed(&logical, headers).await;
+        // belong to it, and conditional requests are judged against it. A
+        // `304` carries Vary too, so siblings are probed before validators
+        // are compared.
+        let (variants_exist, encoded) = self.precompressed(&logical, headers);
         let has_encoding = encoded.is_some();
         if variants_exist {
             response_headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
         }
-        let (mut file, length, modified, etag) = match encoded {
+        let (file, metadata, etag) = match encoded {
             Some((coding, sibling, sibling_metadata)) => {
                 response_headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
                 // Each encoding is its own representation, validated by the
                 // sibling's own metadata, so regenerating it changes its tag.
-                let length = sibling_metadata.len();
-                let modified = sibling_metadata.modified().ok();
-                let tag = entity_tag(length, modified);
+                let tag = entity_tag(sibling_metadata.len(), sibling_metadata.modified().ok());
                 let mut tag = tag.as_bytes()[..tag.len() - 1].to_vec();
                 tag.extend_from_slice(format!("-{coding}\"").as_bytes());
                 (
                     sibling,
-                    length,
-                    modified,
+                    sibling_metadata,
                     HeaderValue::from_bytes(&tag).unwrap(),
                 )
             }
             None => {
-                let modified = metadata.modified().ok();
-                (
-                    identity,
-                    metadata.len(),
-                    modified,
-                    entity_tag(metadata.len(), modified),
-                )
+                let tag = entity_tag(metadata.len(), metadata.modified().ok());
+                (identity, metadata, tag)
             }
         };
+        let length = metadata.len();
+        let modified = metadata.modified().ok();
         if let Some(value) = modified
             .map(httpdate::fmt_http_date)
             .and_then(|value| HeaderValue::from_str(&value).ok())
@@ -134,11 +398,20 @@ impl StaticDir {
             response_headers.insert(header::LAST_MODIFIED, value);
         }
         response_headers.insert(header::ETAG, etag.clone());
-        if not_modified(headers, &etag, modified) {
-            response_headers.remove(header::CONTENT_TYPE);
-            response_headers.remove(header::CONTENT_ENCODING);
-            return with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
+        if not_modified(headers, &etag, modified, exact) {
+            let representation = Representation {
+                content_type: response_headers.remove(header::CONTENT_TYPE),
+                length,
+                encoded: response_headers.remove(header::CONTENT_ENCODING).is_some(),
+                reselect: None,
+            };
+            let mut response =
+                with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
+            response.extensions_mut().insert(representation);
+            return response;
         }
+        let mut status = StatusCode::OK;
+        let (mut start, mut size) = (0, length);
         if !has_encoding {
             // Byte ranges are offered on the identity representation only.
             response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -148,21 +421,14 @@ impl StaticDir {
                 .and_then(|value| value.to_str().ok());
             if let Some(range) = range {
                 match parse_range(range, length) {
-                    Range::Satisfiable(start, end) => {
-                        if file.seek(SeekFrom::Start(start)).await.is_err() {
-                            return not_found();
-                        }
+                    Range::Satisfiable(first, last) => {
                         response_headers.insert(
                             header::CONTENT_RANGE,
-                            HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
+                            HeaderValue::from_str(&format!("bytes {first}-{last}/{length}"))
                                 .unwrap(),
                         );
-                        let body = FileBody::new(file, end - start + 1).holding(slot);
-                        return with_headers(
-                            StatusCode::PARTIAL_CONTENT,
-                            response_headers,
-                            Body::new(body),
-                        );
+                        status = StatusCode::PARTIAL_CONTENT;
+                        (start, size) = (first, last - first + 1);
                     }
                     Range::Unsatisfiable => {
                         response_headers.remove(header::CONTENT_TYPE);
@@ -180,33 +446,48 @@ impl StaticDir {
                 }
             }
         }
-        let mut response = with_headers(
-            StatusCode::OK,
-            response_headers,
-            Body::new(FileBody::new(file, length).holding(slot)),
-        );
-        response.extensions_mut().insert(crate::budget::Unreserved);
+        let representation = (status == StatusCode::PARTIAL_CONTENT).then(|| Representation {
+            content_type: response_headers.get(header::CONTENT_TYPE).cloned(),
+            length,
+            encoded: false,
+            reselect: None,
+        });
+        let body = if head {
+            // The length the GET would send, as a header compression can read.
+            response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+            // Only the length is needed: no entry is taken and nothing read.
+            Body::new(Unsent(size))
+        } else {
+            let Some(shared) = self.open.share(file, &metadata) else {
+                return capacity_full();
+            };
+            Body::new(FileBody::start(shared, start, size))
+        };
+        let mut response = with_headers(status, response_headers, body);
+        if status == StatusCode::OK {
+            response.extensions_mut().insert(crate::budget::Unreserved);
+        }
+        if let Some(representation) = representation {
+            response.extensions_mut().insert(representation);
+        }
         response
     }
 
     /// Whether `.br`/`.gz` siblings exist, and the one the client accepts.
-    async fn precompressed(
+    fn precompressed(
         &self,
         path: &Path,
         headers: &HeaderMap,
-    ) -> (
-        bool,
-        Option<(&'static str, tokio::fs::File, std::fs::Metadata)>,
-    ) {
+    ) -> (bool, Option<(&'static str, File, std::fs::Metadata)>) {
         let mut variants_exist = false;
         for (coding, suffix) in [("br", ".br"), ("gzip", ".gz")] {
             let mut sibling = path.to_path_buf().into_os_string();
             sibling.push(suffix);
             let sibling = PathBuf::from(sibling);
-            let Some(canonical) = self.canonical_contained(&sibling).await else {
+            let Some(canonical) = self.canonical_contained(&sibling) else {
                 continue;
             };
-            let Ok((file, metadata)) = self.open_file(&canonical).await else {
+            let Ok((file, metadata)) = self.open_file(&canonical) else {
                 continue;
             };
             variants_exist = true;
@@ -221,31 +502,25 @@ impl StaticDir {
     /// Returns the canonical file (for access and containment), its metadata,
     /// whether a directory index was chosen, and the logical path as requested
     /// (for the media type and precompressed siblings), since a symlink's
-    /// target may carry a different name.
-    async fn resolve(
-        &self,
-        relative: &Path,
-    ) -> Option<(tokio::fs::File, std::fs::Metadata, bool, PathBuf)> {
+    /// target may carry a different name. Runs on the blocking pool.
+    fn resolve(&self, relative: &Path) -> Option<(File, std::fs::Metadata, bool, PathBuf)> {
         let mut logical = self.root.join(relative);
-        let mut path = tokio::fs::canonicalize(&logical).await.ok()?;
+        let mut path = std::fs::canonicalize(&logical).ok()?;
         if !self.serves(&path) {
             return None;
         }
-        let metadata = tokio::fs::metadata(&path).await.ok()?;
-        let directory = metadata.is_dir();
+        let directory = std::fs::metadata(&path).ok()?.is_dir();
         if directory {
             if !self.html {
                 return None;
             }
             logical.push("index.html");
-            path = tokio::fs::canonicalize(path.join("index.html"))
-                .await
-                .ok()?;
+            path = std::fs::canonicalize(path.join("index.html")).ok()?;
             if !self.serves(&path) {
                 return None;
             }
         }
-        let (file, metadata) = self.open_file(&path).await.ok()?;
+        let (file, metadata) = self.open_file(&path).ok()?;
         Some((file, metadata, directory, logical))
     }
 
@@ -260,26 +535,18 @@ impl StaticDir {
         })
     }
 
-    async fn canonical_contained(&self, path: &Path) -> Option<PathBuf> {
-        tokio::fs::canonicalize(path)
-            .await
+    fn canonical_contained(&self, path: &Path) -> Option<PathBuf> {
+        std::fs::canonicalize(path)
             .ok()
             .filter(|path| self.serves(path))
     }
 
-    async fn open_file(
-        &self,
-        path: &Path,
-    ) -> std::io::Result<(tokio::fs::File, std::fs::Metadata)> {
+    /// Open a checked canonical path beneath the pinned root.
+    fn open_file(&self, path: &Path) -> std::io::Result<(File, std::fs::Metadata)> {
         let relative = path
             .strip_prefix(&self.root)
-            .map_err(std::io::Error::other)?
-            .to_path_buf();
-        let root = self.root_fd.clone();
-        let (file, metadata) = tokio::task::spawn_blocking(move || open_beneath(&root, &relative))
-            .await
-            .map_err(std::io::Error::other)??;
-        Ok((tokio::fs::File::from_std(file), metadata))
+            .map_err(std::io::Error::other)?;
+        open_beneath(&self.root_fd, relative)
     }
 }
 
@@ -341,42 +608,82 @@ fn not_found() -> Response {
     crate::error(StatusCode::NOT_FOUND, "Not Found")
 }
 
-type OpenResponseFile = (File, std::fs::Metadata, Option<u64>);
 type RawFileHeaders = Vec<(Vec<u8>, Vec<u8>)>;
 
-/// An open file returned from Python's `FileResponse` to be served natively.
+enum Pending {
+    /// Opened when the handler's response became its envelope. The length
+    /// left to read is set once `prepare` has chosen the representation, on
+    /// the ASGI path; the native path takes the file while it is still unset.
+    Open(File, std::fs::Metadata, Option<u64>),
+    Closed,
+}
+
+/// A file returned from Python's `FileResponse` to be served natively.
 #[derive(Clone)]
 #[pyo3::pyclass(module = "bessemer._native", name = "_ResponseFile", from_py_object)]
-pub(crate) struct PendingFile(Arc<std::sync::Mutex<Option<OpenResponseFile>>>);
+pub(crate) struct PendingFile(Arc<Mutex<Pending>>);
 
 impl PendingFile {
+    /// The opened file to serve on the native path; `None` once it was
+    /// taken, closed, or prepared for the ASGI path.
     pub(crate) fn take(&self) -> Option<(File, std::fs::Metadata)> {
-        self.0
-            .lock()
-            .unwrap()
-            .take()
-            .map(|(file, metadata, _)| (file, metadata))
+        let mut pending = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match std::mem::replace(&mut *pending, Pending::Closed) {
+            Pending::Open(file, metadata, None) => Some((file, metadata)),
+            other => {
+                *pending = other;
+                None
+            }
+        }
     }
+}
+
+/// Open a `FileResponse` path for reading without waiting on anything that
+/// is not a regular file: with `O_NONBLOCK`, opening a FIFO returns at once,
+/// and the type is checked on the opened descriptor, so a path replaced after
+/// `FileResponse` checked it is refused rather than read.
+fn open_regular(path: &Path) -> std::io::Result<(File, std::fs::Metadata)> {
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags, open};
+        File::from(open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?)
+    };
+    #[cfg(not(unix))]
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    Ok((file, metadata))
 }
 
 #[pyo3::pymethods]
 impl PendingFile {
+    /// Open the file now, when the handler's response becomes its envelope,
+    /// not when the response is written: cleanup that runs in between (a
+    /// `yield` dependency removing the temporary file it made) must not take
+    /// the file away. The open cannot wait (see `open_regular`), the
+    /// interpreter is released for it, and reading is left to the blocking
+    /// pool.
     #[new]
-    fn py_new(path: &str) -> pyo3::PyResult<Self> {
-        let file = File::open(path).map_err(|_| {
-            pyo3::exceptions::PyRuntimeError::new_err("file response cannot be opened")
+    fn py_new(py: pyo3::Python<'_>, path: &str) -> pyo3::PyResult<Self> {
+        let path = PathBuf::from(path);
+        let (file, metadata) = py.detach(|| open_regular(&path)).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    "file response path is not a regular file"
+                } else {
+                    "file response cannot be opened"
+                },
+            )
         })?;
-        let metadata = file.metadata().map_err(|_| {
-            pyo3::exceptions::PyRuntimeError::new_err("file response cannot be stat'd")
-        })?;
-        if !metadata.is_file() {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "file response path is not a regular file",
-            ));
-        }
-        Ok(Self(Arc::new(std::sync::Mutex::new(Some((
+        Ok(Self(Arc::new(Mutex::new(Pending::Open(
             file, metadata, None,
-        ))))))
+        )))))
     }
 
     fn prepare(
@@ -403,17 +710,17 @@ impl PendingFile {
             *response.status_mut() = StatusCode::from_u16(status)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             *response.headers_mut() = parse(headers)?;
-            let mut guard = self.0.lock().unwrap();
-            let Some((file, metadata, remaining)) = guard.as_mut() else {
+            let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let Pending::Open(file, metadata, remaining) = &mut *guard else {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(
                     "file response is closed",
                 ));
             };
             let (mut response, selected) =
-                select_response_file(metadata, response, &parse(request_headers)?, head);
+                select_response_file(metadata, response, &parse(request_headers)?, head, None);
             *remaining = Some(0);
             if let Some((start, length)) = selected {
-                use std::io::Seek;
+                use std::io::{Seek, SeekFrom};
                 file.seek(SeekFrom::Start(start))
                     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
                 *remaining = Some(length);
@@ -437,8 +744,8 @@ impl PendingFile {
     fn read_chunk(&self, py: pyo3::Python<'_>) -> pyo3::PyResult<Vec<u8>> {
         py.detach(|| {
             use std::io::Read;
-            let mut guard = self.0.lock().unwrap();
-            let Some((file, _, remaining)) = guard.as_mut() else {
+            let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let Pending::Open(file, _, remaining) = &mut *guard else {
                 return Ok(Vec::new());
             };
             let length = remaining.map_or(CHUNK, |n| n.min(CHUNK as u64) as usize);
@@ -455,13 +762,18 @@ impl PendingFile {
     }
 
     fn close(&self, py: pyo3::Python<'_>) {
-        py.detach(|| self.0.lock().unwrap().take());
+        py.detach(|| {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Pending::Closed;
+        });
     }
 }
 
 /// Serve a route handler's `FileResponse` on the native static-file path,
 /// supporting `If-None-Match`, `If-Modified-Since`, `If-Range`, and single
-/// byte ranges (`206 Partial Content`, `416 Range Not Satisfiable`).
+/// byte ranges (`206 Partial Content`, `416 Range Not Satisfiable`). The file
+/// was opened and checked when the response was created; it is first read on
+/// the blocking pool, and its body shares the process's table of open files
+/// with the static mounts.
 pub(crate) async fn serve_response_file(
     file: File,
     metadata: std::fs::Metadata,
@@ -469,24 +781,81 @@ pub(crate) async fn serve_response_file(
     request_headers: &HeaderMap,
     head: bool,
 ) -> Response {
-    let (mut response, selected) = select_response_file(&metadata, response, request_headers, head);
+    respond_with_file(
+        &OPEN_FILES,
+        move || Ok((file, metadata)),
+        response,
+        request_headers,
+        head,
+    )
+    .await
+}
+
+/// `source` yields the opened, checked file; it runs on the blocking pool.
+async fn respond_with_file(
+    open: &Arc<OpenFiles>,
+    source: impl FnOnce() -> std::io::Result<(File, std::fs::Metadata)> + Send + 'static,
+    response: Response,
+    request_headers: &HeaderMap,
+    head: bool,
+) -> Response {
+    let open = open.clone();
+    let request = conditions(request_headers);
+    tokio::task::spawn_blocking(move || {
+        let Ok((file, metadata)) = source() else {
+            return internal_error();
+        };
+        file_response(open, file, metadata, response, request, head, None)
+    })
+    .await
+    .unwrap_or_else(|_| internal_error())
+}
+
+/// Select and start a file response; runs on the blocking pool. `exact` is
+/// as for [`not_modified`].
+fn file_response(
+    open: Arc<OpenFiles>,
+    file: File,
+    metadata: std::fs::Metadata,
+    response: Response,
+    request: HeaderMap,
+    head: bool,
+    exact: Option<bool>,
+) -> Response {
+    // What the application sent, kept in case a 304 is to be selected again
+    // (see `StaticDir::respond`).
+    let original = (exact.is_none() && request.contains_key(header::IF_NONE_MATCH))
+        .then(|| (response.status(), response.headers().clone()));
+    let (mut response, selected) = select_response_file(&metadata, response, &request, head, exact);
     if let Some((start, length)) = selected {
-        let mut file = tokio::fs::File::from_std(file);
-        if start != 0 && file.seek(SeekFrom::Start(start)).await.is_err() {
-            return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
-        }
-        *response.body_mut() = Body::new(FileBody::new(file, length));
+        let Some(shared) = open.share(file, &metadata) else {
+            return capacity_full();
+        };
+        *response.body_mut() = Body::new(FileBody::start(shared, start, length));
         response.extensions_mut().insert(crate::budget::Unreserved);
+    } else if response.status() == StatusCode::NOT_MODIFIED
+        && let Some((status, headers)) = original
+        && let Some(representation) = response.extensions_mut().get_mut::<Representation>()
+    {
+        representation.reselect = Some(Reselect::new(move |weak| {
+            let mut again = Response::new(Body::empty());
+            *again.status_mut() = status;
+            *again.headers_mut() = headers;
+            file_response(open, file, metadata, again, request, head, Some(weak))
+        }));
     }
     response
 }
 
 /// The same representation selection is used before native and ASGI headers.
+/// A `304` or `206` it makes carries the [`Representation`] of the `200` it
+/// stands for. `exact` is as for [`not_modified`].
 fn select_response_file(
     metadata: &std::fs::Metadata,
     mut response: Response,
     request_headers: &HeaderMap,
     head: bool,
+    exact: Option<bool>,
 ) -> (Response, Option<(u64, u64)>) {
     if matches!(response.status().as_u16(), 204 | 205 | 304) {
         let headers = response.headers_mut();
@@ -517,12 +886,18 @@ fn select_response_file(
             etag
         }
     };
-    if response.status() == StatusCode::OK && not_modified(request_headers, &etag, modified) {
+    if response.status() == StatusCode::OK && not_modified(request_headers, &etag, modified, exact)
+    {
         let response_headers = response.headers_mut();
-        response_headers.remove(header::CONTENT_TYPE);
+        let representation = Representation {
+            content_type: response_headers.remove(header::CONTENT_TYPE),
+            length,
+            encoded: response_headers.remove(header::CONTENT_ENCODING).is_some(),
+            reselect: None,
+        };
         response_headers.remove(header::CONTENT_LENGTH);
-        response_headers.remove(header::CONTENT_ENCODING);
         *response.status_mut() = StatusCode::NOT_MODIFIED;
+        response.extensions_mut().insert(representation);
         return (response, None);
     }
     let has_encoding = response.headers().contains_key(header::CONTENT_ENCODING);
@@ -548,6 +923,13 @@ fn select_response_file(
                                 .unwrap(),
                         );
                         *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        let representation = Representation {
+                            content_type: response.headers().get(header::CONTENT_TYPE).cloned(),
+                            length,
+                            encoded: false,
+                            reselect: None,
+                        };
+                        response.extensions_mut().insert(representation);
                         if head {
                             crate::set_head_length(response.headers_mut(), slice_len as usize);
                         }
@@ -669,15 +1051,30 @@ fn whole_seconds(time: SystemTime) -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-fn not_modified(headers: &HeaderMap, etag: &HeaderValue, modified: Option<SystemTime>) -> bool {
+/// `exact` is `None` to compare `If-None-Match` weakly, as RFC 9110 has it;
+/// with compression, which serves one file as more than one representation,
+/// the file is selected again with `Some(weak)` to match only the tag the
+/// client is sent: `etag`, or its weak form when `weak`.
+fn not_modified(
+    headers: &HeaderMap,
+    etag: &HeaderValue,
+    modified: Option<SystemTime>,
+    exact: Option<bool>,
+) -> bool {
     if let Some(value) = headers.get(header::IF_NONE_MATCH) {
         // If-None-Match takes precedence over If-Modified-Since.
+        let etag = etag.as_bytes();
         return value
             .as_bytes()
             .split(|byte| *byte == b',')
             .any(|candidate| {
                 let candidate = candidate.trim_ascii();
-                candidate == b"*" || weak_equal(candidate, etag.as_bytes())
+                candidate == b"*"
+                    || match exact {
+                        None => weak_equal(candidate, etag),
+                        Some(false) => candidate == etag,
+                        Some(true) => candidate.starts_with(b"W/") && weak_equal(candidate, etag),
+                    }
             });
     }
     let (Some(since), Some(modified)) = (
@@ -836,28 +1233,44 @@ fn content_type(path: &Path) -> HeaderValue {
     })
 }
 
-/// A file body read in fixed-size chunks, with an exact length.
+/// A file body read in fixed-size chunks by position from a shared
+/// descriptor, with an exact length.
 struct FileBody {
-    file: tokio::fs::File,
+    file: Arc<SharedFile>,
+    /// The next byte to read.
+    offset: u64,
+    /// Bytes not yet sent, `ready` included.
     remaining: u64,
-    buffer: Vec<u8>,
-    /// A static mount's slot, released when the body is dropped.
-    _slot: Option<OwnedSemaphorePermit>,
+    ready: Option<FirstChunk>,
+    reading: Option<tokio::task::JoinHandle<std::io::Result<Bytes>>>,
 }
 
 impl FileBody {
-    fn new(file: tokio::fs::File, length: u64) -> Self {
+    /// Called on the blocking thread that opened the file, which reads the
+    /// first chunk too, so a small file is sent without another trip to the
+    /// blocking pool. Only while there is a place for it: the chunk is held
+    /// until the transport asks, which a stalled stream never does.
+    fn start(file: Arc<SharedFile>, start: u64, length: u64) -> Self {
+        let want = chunk_len(length);
+        let mut ready = None;
+        if want > 0 && file.table.hold_first_chunk() {
+            // Dropped again, with its place, if nothing was read.
+            let first = FirstChunk {
+                bytes: read_chunk(&file.file, start, want).unwrap_or_default(),
+                table: file.table.clone(),
+            };
+            if !first.bytes.is_empty() {
+                ready = Some(first);
+            }
+        }
+        let offset = start + ready.as_ref().map_or(0, |first| first.bytes.len() as u64);
         Self {
             file,
+            offset,
             remaining: length,
-            buffer: Vec::new(),
-            _slot: None,
+            ready,
+            reading: None,
         }
-    }
-
-    fn holding(mut self, slot: OwnedSemaphorePermit) -> Self {
-        self._slot = Some(slot);
-        self
     }
 }
 
@@ -869,18 +1282,32 @@ impl http_body::Body for FileBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        if self.remaining == 0 {
+        let this = &mut *self;
+        if this.remaining == 0 {
             return Poll::Ready(None);
         }
-        let want = usize::try_from(self.remaining).map_or(CHUNK, |left| left.min(CHUNK));
-        let this = &mut *self;
-        if this.buffer.len() != want {
-            this.buffer.resize(want, 0);
-        }
-        let mut read = ReadBuf::new(&mut this.buffer);
-        ready!(Pin::new(&mut this.file).poll_read(cx, &mut read))?;
-        let filled = read.filled().len();
-        if filled == 0 {
+        let chunk = match this.ready.take() {
+            // Its place is given up as it is handed over.
+            Some(mut first) => std::mem::take(&mut first.bytes),
+            None => {
+                let (file, offset, want) = (&this.file, this.offset, chunk_len(this.remaining));
+                let reading = this.reading.get_or_insert_with(|| {
+                    let file = file.clone();
+                    tokio::task::spawn_blocking(move || read_chunk(&file.file, offset, want))
+                });
+                let read = ready!(Pin::new(reading).poll(cx));
+                this.reading = None;
+                match read {
+                    Ok(Ok(chunk)) => {
+                        this.offset += chunk.len() as u64;
+                        chunk
+                    }
+                    Ok(Err(error)) => return Poll::Ready(Some(Err(error))),
+                    Err(error) => return Poll::Ready(Some(Err(std::io::Error::other(error)))),
+                }
+            }
+        };
+        if chunk.is_empty() {
             // The file shrank after its length was read; end with an error
             // rather than a short body that claims to be complete.
             return Poll::Ready(Some(Err(std::io::Error::new(
@@ -888,8 +1315,7 @@ impl http_body::Body for FileBody {
                 "static file truncated while serving",
             ))));
         }
-        this.remaining -= filled as u64;
-        let chunk = Bytes::copy_from_slice(&this.buffer[..filled]);
+        this.remaining -= chunk.len() as u64;
         Poll::Ready(Some(Ok(Frame::data(chunk))))
     }
 
@@ -902,52 +1328,341 @@ impl http_body::Body for FileBody {
     }
 }
 
+/// A HEAD response's body: it reports the length a GET would send, and the
+/// router replaces it with an empty body before anything is written.
+struct Unsent(u64);
+
+impl http_body::Body for Unsent {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        Poll::Ready(
+            (self.0 > 0).then(|| Err(std::io::Error::other("a HEAD response sends no body"))),
+        )
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
-    #[tokio::test]
-    async fn responses_in_progress_are_bounded_per_mount() {
+    fn scratch(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root =
-            std::env::temp_dir().join(format!("bessemer-slots-{}-{unique}", std::process::id()));
+            std::env::temp_dir().join(format!("bessemer-{name}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("item"), b"public").unwrap();
-        let files = StaticDir::new(root.to_str().unwrap(), false, None, 2).unwrap();
-        let uri: Uri = "/item".parse().unwrap();
+        root
+    }
+
+    fn mount(root: &Path, open: &Arc<OpenFiles>) -> Arc<StaticDir> {
+        let mut files = StaticDir::new(root.to_str().unwrap(), false, None).unwrap();
+        files.open = open.clone();
+        Arc::new(files)
+    }
+
+    async fn get(files: &Arc<StaticDir>, name: &str, headers: &HeaderMap) -> Response {
+        let uri: Uri = format!("/{name}").parse().unwrap();
+        files.serve(name, &uri, headers, false).await
+    }
+
+    async fn collect(response: Response) -> Result<Vec<u8>, axum::Error> {
+        Ok(response.into_body().collect().await?.to_bytes().to_vec())
+    }
+
+    /// Descriptors this process holds on `path`.
+    #[cfg(target_os = "linux")]
+    fn descriptors(path: &Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| target == path)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn bodies_share_one_descriptor_per_file_and_distinct_files_are_bounded() {
+        let root = scratch("open-files");
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.join(name), name.repeat(100_000)).unwrap();
+        }
+        let open = OpenFiles::new(2);
+        let files = mount(&root, &open);
         let headers = HeaderMap::new();
-        // Two bodies not yet sent hold both slots; a third response is refused.
-        let first = files.serve("item", &uri, &headers).await;
-        let second = files.serve("item", &uri, &headers).await;
-        assert_eq!(first.status(), StatusCode::OK);
+        // A hundred bodies of one file, none sent yet, hold one descriptor.
+        let mut held = Vec::new();
+        for _ in 0..100 {
+            let response = get(&files, "a", &headers).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            held.push(response);
+        }
+        assert_eq!(open.open(), 1);
+        #[cfg(target_os = "linux")]
+        assert_eq!(descriptors(&root.canonicalize().unwrap().join("a")), 1);
+        // A second file takes the second entry. A third is refused while
+        // both are open, but more bodies of an open file are not.
+        let second = get(&files, "b", &headers).await;
         assert_eq!(second.status(), StatusCode::OK);
-        let refused = files.serve("item", &uri, &headers).await;
+        let refused = get(&files, "c", &headers).await;
         assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(refused.headers()[header::RETRY_AFTER], "1");
-        // A missing file, a conditional hit and an unsatisfiable range hold
-        // nothing once answered.
-        drop(first);
+        assert_eq!(get(&files, "b", &headers).await.status(), StatusCode::OK);
+        // A missing file, HEAD, a conditional hit and an unsatisfiable range
+        // open nothing, so they are answered while the table is full.
         assert_eq!(
-            files.serve("missing", &uri, &headers).await.status(),
+            get(&files, "missing", &headers).await.status(),
             StatusCode::NOT_FOUND
         );
-        let mut conditional = HeaderMap::new();
-        conditional.insert(
-            header::IF_NONE_MATCH,
-            second.headers()[header::ETAG].clone(),
-        );
+        let head = files
+            .serve("c", &"/c".parse().unwrap(), &headers, true)
+            .await;
+        assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(
-            files.serve("item", &uri, &conditional).await.status(),
+            http_body::Body::size_hint(head.body()).exact(),
+            Some(100_000)
+        );
+        let mut conditional = HeaderMap::new();
+        conditional.insert(header::IF_NONE_MATCH, head.headers()[header::ETAG].clone());
+        assert_eq!(
+            get(&files, "c", &conditional).await.status(),
             StatusCode::NOT_MODIFIED
         );
-        let third = files.serve("item", &uri, &headers).await;
+        let mut range = HeaderMap::new();
+        range.insert(header::RANGE, HeaderValue::from_static("bytes=200000-"));
+        assert_eq!(
+            get(&files, "c", &range).await.status(),
+            StatusCode::RANGE_NOT_SATISFIABLE
+        );
+        assert_eq!(open.open(), 2);
+        // A body that was sent or abandoned gives its file back.
+        drop(held);
+        assert_eq!(open.open(), 1);
+        let third = get(&files, "c", &headers).await;
         assert_eq!(third.status(), StatusCode::OK);
-        // A body that was sent or abandoned gives its slot back.
-        drop((second, third));
-        assert_eq!(files.slots.available_permits(), 2);
+        assert_eq!(collect(third).await.unwrap(), b"c".repeat(100_000));
+        range.insert(header::RANGE, HeaderValue::from_static("bytes=99990-"));
+        let partial = get(&files, "b", &range).await;
+        assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(collect(partial).await.unwrap(), b"b".repeat(10));
+        drop(second);
+        assert_eq!(open.open(), 0);
+        #[cfg(target_os = "linux")]
+        assert_eq!(descriptors(&root.canonicalize().unwrap().join("a")), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bodyless_file_responses_say_what_their_200_would_be() {
+        use crate::compression::{Coding, Compression};
+        let root = scratch("representation");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "notes ".repeat(1000)).unwrap();
+        let open = OpenFiles::new(4);
+        let files = mount(&root, &open);
+        let compression = Compression::parse(&serde_json::json!({})).unwrap();
+        let file_response = |headers: HeaderMap| {
+            let path = path.clone();
+            async move {
+                let (file, metadata) = open_regular(&path).unwrap();
+                let mut response = Response::new(Body::empty());
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+                serve_response_file(file, metadata, response, &headers, false).await
+            }
+        };
+        for from_route in [false, true] {
+            let full = if from_route {
+                file_response(HeaderMap::new()).await
+            } else {
+                get(&files, "notes.txt", &HeaderMap::new()).await
+            };
+            let strong = full.headers()[header::ETAG].clone();
+            let conditional = |gzip: bool| {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::IF_NONE_MATCH, strong.clone());
+                if gzip {
+                    headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+                }
+                headers
+            };
+            // An identity client holding the identity representation: a 304
+            // with the 200's tag and Vary.
+            let identity = if from_route {
+                file_response(conditional(false)).await
+            } else {
+                get(&files, "notes.txt", &conditional(false)).await
+            };
+            assert_eq!(identity.status(), StatusCode::NOT_MODIFIED);
+            let representation = identity.extensions().get::<Representation>().unwrap();
+            assert_eq!(representation.length, 6000);
+            assert!(!representation.encoded);
+            assert!(representation.reselect.is_some());
+            let identity = compression.complete(None, Some(&strong), identity).await;
+            assert_eq!(identity.status(), StatusCode::NOT_MODIFIED);
+            assert_eq!(identity.headers()[header::ETAG], strong);
+            assert_eq!(identity.headers()[header::VARY], "Accept-Encoding");
+            // A client that accepts gzip is sent the compressed variant, whose
+            // tag it did not list: the file is selected again, in full.
+            let held = if from_route {
+                file_response(conditional(true)).await
+            } else {
+                get(&files, "notes.txt", &conditional(true)).await
+            };
+            assert_eq!(held.status(), StatusCode::NOT_MODIFIED);
+            let again = compression
+                .complete(Some(Coding::Gzip), Some(&strong), held)
+                .await;
+            assert_eq!(again.status(), StatusCode::OK, "{from_route}");
+            assert!(
+                again
+                    .extensions()
+                    .get::<crate::budget::Unreserved>()
+                    .is_some()
+            );
+            assert_eq!(collect(again).await.unwrap().len(), 6000);
+        }
+        // A range says what the whole file is, and is never selected again.
+        let mut range = HeaderMap::new();
+        range.insert(header::RANGE, HeaderValue::from_static("bytes=0-9"));
+        let partial = get(&files, "notes.txt", &range).await;
+        assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+        let representation = partial.extensions().get::<Representation>().unwrap();
+        assert_eq!(representation.length, 6000);
+        assert!(representation.reselect.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn replaced_and_resized_files_keep_each_response_consistent() {
+        let root = scratch("resized");
+        let path = root.join("item");
+        let old = vec![b'o'; 150_000];
+        std::fs::write(&path, &old).unwrap();
+        let open = OpenFiles::new(4);
+        let files = mount(&root, &open);
+        let headers = HeaderMap::new();
+
+        // A file replaced while being sent: the response under way finishes
+        // with the file its headers describe, and a new one gets the new file.
+        let first = get(&files, "item", &headers).await;
+        std::fs::write(root.join("item.new"), b"new").unwrap();
+        std::fs::rename(root.join("item.new"), &path).unwrap();
+        let second = get(&files, "item", &headers).await;
+        assert_eq!(open.open(), 2);
+        assert_eq!(collect(first).await.unwrap(), old);
+        assert_eq!(collect(second).await.unwrap(), b"new");
+        assert_eq!(open.open(), 0);
+
+        // Truncated in place while being sent: the body ends with an error
+        // rather than short.
+        std::fs::write(&path, vec![b'x'; 200_000]).unwrap();
+        let shrinking = get(&files, "item", &headers).await;
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(10)
+            .unwrap();
+        assert!(collect(shrinking).await.is_err());
+
+        // Grown in place: the body sends the length its headers announced.
+        std::fs::write(&path, vec![b'g'; 100]).unwrap();
+        let growing = get(&files, "item", &headers).await;
+        {
+            use std::io::Write;
+            let mut appending = File::options().append(true).open(&path).unwrap();
+            appending.write_all(&[b'h'; 1000]).unwrap();
+        }
+        assert_eq!(collect(growing).await.unwrap(), vec![b'g'; 100]);
+        assert_eq!(open.open(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_responses_share_the_table_and_refuse_what_is_not_a_file() {
+        let root = scratch("file-response");
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.join(name), name.repeat(100_000)).unwrap();
+        }
+        let open = OpenFiles::new(2);
+        let headers = HeaderMap::new();
+        let respond = |name: &str, head: bool| {
+            let path = root.join(name);
+            respond_with_file(
+                &open,
+                move || open_regular(&path),
+                Response::new(Body::empty()),
+                &headers,
+                head,
+            )
+        };
+        let mut held = Vec::new();
+        for _ in 0..100 {
+            let response = respond("a", false).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            held.push(response);
+        }
+        assert_eq!(open.open(), 1);
+        // A hundred bodies nobody has asked for share one descriptor, and
+        // only as many as the table allows hold a chunk read in advance.
+        assert_eq!(open.first_chunks(), 2);
+        // One of the others reads its first chunk when asked, and sends the
+        // same bytes.
+        let unread = held.pop().unwrap();
+        assert_eq!(collect(unread).await.unwrap(), b"a".repeat(100_000));
+        assert_eq!(open.first_chunks(), 2);
+        // One that held a chunk gives its place up as the chunk is taken.
+        let first = held.remove(0);
+        assert_eq!(collect(first).await.unwrap(), b"a".repeat(100_000));
+        assert_eq!(open.first_chunks(), 1);
+        #[cfg(target_os = "linux")]
+        assert_eq!(descriptors(&root.canonicalize().unwrap().join("a")), 1);
+        let second = respond("b", false).await;
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(
+            respond("c", false).await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let head = respond("c", true).await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers()[header::CONTENT_LENGTH], "100000");
+        drop(held);
+        assert_eq!(collect(second).await.unwrap(), b"b".repeat(100_000));
+        assert_eq!(open.open(), 0);
+        assert_eq!(open.first_chunks(), 0);
+
+        // A path that became a FIFO is refused at once, not waited on.
+        let created = std::process::Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(created.success());
+        let refused =
+            tokio::time::timeout(std::time::Duration::from_secs(5), respond("pipe", false))
+                .await
+                .expect("opening a FIFO must not wait for a writer");
+        assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            respond("missing", false).await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(open.open(), 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -974,8 +1689,8 @@ mod tests {
 
     #[tokio::test]
     async fn replaced_static_paths_cannot_escape_the_pinned_root() {
+        use std::io::Read;
         use std::os::unix::fs::symlink;
-        use tokio::io::AsyncReadExt;
 
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -990,58 +1705,52 @@ mod tests {
         std::fs::write(root.join("item"), b"public").unwrap();
         std::fs::write(root.join("item.br"), b"compressed").unwrap();
         std::fs::write(root.join("nested/item"), b"nested").unwrap();
-        let files = StaticDir::new(root.to_str().unwrap(), false, None, 1024).unwrap();
+        let files = Arc::new(StaticDir::new(root.to_str().unwrap(), false, None).unwrap());
 
         for name in ["item", "item.br"] {
             let path = root.join(name);
-            let checked = files.canonical_contained(&path).await.unwrap();
+            let checked = files.canonical_contained(&path).unwrap();
             std::fs::remove_file(&path).unwrap();
             symlink(&outside, &path).unwrap();
-            assert!(files.open_file(&checked).await.is_err(), "{name}");
+            assert!(files.open_file(&checked).is_err(), "{name}");
         }
 
         let checked = files
             .canonical_contained(&root.join("nested/item"))
-            .await
             .unwrap();
         std::fs::rename(root.join("nested"), root.join("moved")).unwrap();
         symlink(&base, root.join("nested")).unwrap();
-        assert!(files.open_file(&checked).await.is_err());
+        assert!(files.open_file(&checked).is_err());
 
         symlink(root.join("moved/item"), root.join("alias")).unwrap();
-        let checked = files
-            .canonical_contained(&root.join("alias"))
-            .await
-            .unwrap();
-        let (mut safe, metadata) = files.open_file(&checked).await.unwrap();
+        let checked = files.canonical_contained(&root.join("alias")).unwrap();
+        let (mut safe, metadata) = files.open_file(&checked).unwrap();
         assert_eq!(metadata.len(), 6);
         let mut data = Vec::new();
-        safe.read_to_end(&mut data).await.unwrap();
+        safe.read_to_end(&mut data).unwrap();
         assert_eq!(data, b"nested");
 
         std::fs::write(root.join("fresh"), b"a").unwrap();
-        let checked = files
-            .canonical_contained(&root.join("fresh"))
-            .await
-            .unwrap();
+        let checked = files.canonical_contained(&root.join("fresh")).unwrap();
         std::fs::write(root.join("fresh"), b"replacement").unwrap();
-        let (_, metadata) = files.open_file(&checked).await.unwrap();
+        let (_, metadata) = files.open_file(&checked).unwrap();
         assert_eq!(metadata.len(), 11);
 
         std::fs::write(root.join("pipe"), b"before").unwrap();
-        let checked = files.canonical_contained(&root.join("pipe")).await.unwrap();
+        let checked = files.canonical_contained(&root.join("pipe")).unwrap();
         std::fs::remove_file(root.join("pipe")).unwrap();
         let created = std::process::Command::new("mkfifo")
             .arg(root.join("pipe"))
             .status()
             .unwrap();
         assert!(created.success());
+        let probe = files.clone();
         let attempted = tokio::time::timeout(
             std::time::Duration::from_millis(500),
-            files.open_file(&checked),
+            tokio::task::spawn_blocking(move || probe.open_file(&checked).is_err()),
         )
         .await;
-        assert!(attempted.is_ok_and(|result| result.is_err()));
+        assert!(attempted.is_ok_and(|refused| refused.unwrap()));
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -1099,9 +1808,17 @@ mod tests {
             header::IF_NONE_MATCH,
             HeaderValue::from_static("\"x\", W/\"10-20\""),
         );
-        assert!(not_modified(&headers, &etag, None));
+        assert!(not_modified(&headers, &etag, None, None));
+        // Selected again for the tag the client is sent, only that form matches.
+        assert!(not_modified(&headers, &etag, None, Some(true)));
+        assert!(!not_modified(&headers, &etag, None, Some(false)));
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"10-20\""));
+        assert!(not_modified(&headers, &etag, None, Some(false)));
+        assert!(!not_modified(&headers, &etag, None, Some(true)));
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        assert!(not_modified(&headers, &etag, None, Some(true)));
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"x\""));
-        assert!(!not_modified(&headers, &etag, None));
+        assert!(!not_modified(&headers, &etag, None, None));
         headers.insert(header::IF_RANGE, HeaderValue::from_static("W/\"10-20\""));
         assert!(!if_range_matches(&headers, &etag, None));
     }

@@ -34,6 +34,16 @@ The worker owns a bounded process pool on GIL builds or thread pool on an
 actually GIL-disabled interpreter. [CPU offload](cpu-and-gpu.md) covers custom
 executors, queue limits, timeout cleanup and synchronous handler thread sizing.
 
+A child process that dies (killed for memory, a crash in native code) breaks
+the process pool: the jobs it held fail with
+`concurrent.futures.process.BrokenProcessPool`, and a pool that had completed a
+job is replaced by the next `run_cpu` call. A pool that breaks before
+completing any job, within a minute of being built (a child that cannot import
+or initialise), is not replaced at once: for one second, doubling on each such
+break up to one minute, `run_cpu` raises `BrokenProcessPool` straight away
+without starting processes, and the first job a pool completes resets the
+wait. Unhandled, the error is a `500` like any other exception.
+
 ## Routes and application lifetime
 
 ```python
@@ -135,7 +145,10 @@ the prefix is still served. Server-wide settings (CORS, security headers,
 request IDs, JWT, API keys, rate limits, metrics, compression and the rest of
 the `App(...)` options that configure the server) and `lifespan` belong on
 the outermost app, so mounting an app that sets them fails rather than
-ignoring them. An app can be mounted once, and not at `/`. Any other ASGI app
+ignoring them. The check repeats at `build()` over every mounted app, and
+adding `CORSMiddleware`, `GZipMiddleware` or `TrustedHostMiddleware` to an
+already mounted app raises `ValueError`. HTTP middleware on a mounted app is
+supported. An app can be mounted once, and not at `/`. Any other ASGI app
 (Starlette, Django, a plain ASGI callable) can be mounted too; every request
 under its prefix then enters Python as an ASGI call
 ([details](fastapi-parity.md#mounted-asgi-apps)).
@@ -228,14 +241,58 @@ started with `app.run()` takes the `event_loop=` argument, and a `TestClient`
 takes `TestClient(app, server_options={"event_loop": "asyncio"})`. Use it if a library you
 depend on misbehaves on the Rust loop; please report the case.
 
-With one loop per worker (the default `loops=1`) the HTTP connections are
-also served on the loop's own thread, so a request no longer crosses between
+With one loop per worker (the default `loops=1`) the HTTP connections can
+also be served on the loop's own thread, so a request no longer crosses between
 threads to reach your handler. In our measurements that cut CPU per request by
 about 29% at one connection (`GET /json`, 36.3 to 25.7µs) and 12% at 64
 connections (92k to 105k requests a second on one worker). With `loops` above
 1, `"auto"` runs asyncio's loop, as releases before `"auto"` did, and the
 connections keep their own threads. Ask for `event_loop="bessemer"` with
 `loops` above 1 to run Bessemer's loop in each lane.
+
+That thread also takes the GIL to run each loop callback. While another
+thread holds the GIL, for example a `def` route running on Bessemer's handler
+threads inside one long C call, a worker on this single-thread layout
+accepts, reads and writes nothing: native routes such as `app.health()`,
+`503` refusals, finished responses and `504` deadlines all wait. So
+`"auto"` serves connections on the loop's thread only for an application
+with no synchronous work that the worker can see when it starts:
+
+- no `def` route handler, mounted apps' routes included;
+- no `def`, generator (`yield`) or class dependency with the default request
+  scope, at any depth, on HTTP or WebSocket routes (application-scoped ones
+  run at startup and do not count; Bessemer's security dependencies are
+  async);
+- no `def` exception handler.
+
+An application that has any of these keeps Bessemer's loop and your handlers
+as they are, but its connections are served on two I/O threads of their own
+beside the loop, as they are with asyncio's loop or with `loops` above 1. A
+native route then answers while a handler holds the GIL: with one `def` route
+inside a single 0.9 s C call, `/healthz` waited at most 3 to 10 ms, against
+420 to 700 ms on the single-thread layout. The cost is a thread hop per
+request and more system calls: with the whole worker on one core, CPU per
+request on such an application's async routes rose by about 20% at one
+connection and 30 to 35% at 64 connections (about 90k to 70k requests a
+second), and on its sync routes by 20 to 40% at one connection and little
+or nothing at 64. Left free to use four cores,
+the same worker served an async route at 64 connections faster than before
+(about 90k to 100-115k requests a second) but spent more CPU on each request,
+and one connection with requests pipelined on it far slower (about 120k to
+20k a second), as asyncio's loop does.
+
+Three choices keep the single-thread layout whatever the application has:
+naming the loop (`event_loop="bessemer"`, which is how to get the earlier
+behaviour back for an application with sync work), `io_backend="io_uring"`,
+which needs it (below), and a free-threaded build with the GIL disabled,
+where the loop's thread never waits for a GIL and sync handlers on that
+layout are how one worker uses several cores.
+
+Each worker writes the layout it chose to standard error when it starts,
+beside the server's `listening` line, for example
+`Bessemer worker pid=4242 event_loop=bessemer loops=1 connections=io-threads (sync handler GET /report)`.
+`connections=loop-thread` is the single-thread layout; the part in brackets
+says why, when it is not the plain default.
 
 Things to know when the loop is Bessemer's:
 
@@ -252,10 +309,20 @@ Things to know when the loop is Bessemer's:
 - `asyncio.new_event_loop()` and `asyncio.run()` called from a thread you
   start yourself still create asyncio's loop; only the worker's own loops are
   Bessemer's.
-- Under heavy connection counts the Rust loop serves connections inside the
-  loop thread, so overload behaviour differs from asyncio's: in one test at
-  1,024 connections the asyncio worker answered many requests with 503
-  (admission refusal) where the Rust loop answered none.
+- Under heavy connection counts the single-thread layout serves connections
+  inside the loop thread, so overload behaviour differs from asyncio's: in
+  one test at 1,024 connections the asyncio worker answered many requests
+  with 503 (admission refusal) where the Rust loop answered none.
+- On the single-thread layout anything that holds the loop's thread or the
+  GIL delays every connection of the worker, native health included. That
+  covers an async handler that blocks the loop, and also GIL-holding work in
+  threads the worker cannot see when it starts: `asyncio.to_thread`,
+  `run_in_threadpool`, `loop.run_in_executor`, sync background tasks and sync
+  iterators given to `StreamingResponse` (they run on the handler threads,
+  but are only known once a handler returns them), an ASGI application
+  mounted with `app.mount` that runs sync code in threads, and threads of
+  your own or of a C extension. If an all-async application does such work,
+  use `event_loop="asyncio"`, whose connections keep their own threads.
 
 Libraries that need a specific loop implementation, such as uvloop, are not
 affected: they are simply not used.
@@ -276,6 +343,10 @@ The setting is off by default and works on Linux only. It needs:
 - Bessemer's loop with a single loop (`loops=1`): the default `"auto"` on
   Linux, or `event_loop="bessemer"`. With `event_loop="asyncio"`, with more
   than one loop, or off Linux, the worker logs a warning and serves on epoll.
+  The ring belongs to the loop's thread, so asking for io_uring keeps the
+  single-thread layout even under `"auto"` for an application with sync
+  handlers or dependencies: its connections then wait whenever a handler
+  thread holds the GIL, as described above.
 - Linux 6.1 or later.
 - A seccomp profile that allows the `io_uring_setup`, `io_uring_enter` and
   `io_uring_register` system calls. Docker's and containerd's default profiles
@@ -486,7 +557,23 @@ chosen" part counts as no file.
 
 `UploadFile` has `filename`, `content_type`, `headers`, `size` and `file` (a
 `BytesIO`), and async `read`, `seek`, `write` and `close`. By default the
-whole body is in memory and within `max_body_size`.
+whole body is in memory and within `max_body_size`. `UploadFile.filename` is
+whatever the client sent and may contain `/`, `\` or `..`, so never use it as
+a path. A `filename*` whose decoded value holds a control character (NUL,
+CR, LF, ...) is refused with `400`, as the quoted `filename` cannot carry
+one. `UploadFile.content_type` is the part's `Content-Type` as sent, or
+`None` when the part has none.
+
+`await request.form()` (and a form model) parses the buffered body in Python
+with the native parser's grammar for part headers, so it reads every part
+as `Form()` and `File()` parameters do: the same parts are refused with the
+same `400` and detail, and the field name, filename, content type and
+whether a part is a file are the same. A part needs one `Content-Disposition:
+form-data` with a non-empty `name`; a parameter's value is a quoted string or
+a token, text inside quotes is never read as parameters, and an unterminated
+quote, a repeated `name` or `filename`, or text after a quoted value is
+refused. Text parts are decoded as UTF-8 whatever charset they declare;
+invalid bytes become U+FFFD there, where a `Form()` field answers `400`.
 
 Set `max_upload_size` (`--max-upload-size`, or `App.run(max_upload_size=...)`)
 to accept larger uploads on routes with `File()` or `UploadFile` parameters.
@@ -505,9 +592,13 @@ spooled requests across the server is bounded by `max_upload_bytes_in_flight`
 (default 4 GiB). Each worker also limits live spooled uploads to its resolved
 `max_in_flight`, independently of execution admission. Paused uploads retain
 that lifetime slot until their last native or Python spool reader closes;
-further spooled requests receive `503` while it is full. A body over
+further spooled requests receive `503` while it is full. All file parts of a
+spooled request share its one spool file descriptor; each part keeps its own
+position, and closing one leaves the others readable. A body over
 `max_upload_size` or field values over
-`max_body_size` receive `413`, and a full disk budget receives `503`. Other
+`max_body_size` receive `413` (at once, before any of the body is read, when
+the declared `Content-Length` is already over), and a full disk budget
+receives `503`. Other
 routes keep `max_body_size`. `max_upload_size` must be `0` (off) or at least
 `max_body_size`, and at most 64 GiB. A request may have at
 most 1000 parts with up to 8 KiB of headers each. Other content types receive
@@ -607,6 +698,21 @@ through other dependencies, appears in its OpenAPI `security` requirement and
 under `components.securitySchemes`, named by `scheme_name` (the class name by
 default). They stay documented when `dependency_overrides` replaces them.
 Two different schemes with one name fail at startup.
+
+A repeated credential is ambiguous, so every `Authorization`-based scheme,
+`APIKeyHeader` and `APIKeyQuery` answer `400` when it appears more than once,
+even with `auto_error=False`. Cookies follow the framework-wide rule that the
+first cookie with a name wins and a request is never refused for its cookies,
+so `APIKeyCookie` reads the first `sid` of `Cookie: sid=a; sid=b`.
+
+Compare credentials with `secrets.compare_digest`, never `==`, so the check
+does not leak where a mismatch occurs:
+
+```python
+# credentials: Annotated[HTTPBasicCredentials, Depends(HTTPBasic())]
+ok = secrets.compare_digest(credentials.password.encode(), expected.encode())
+ok = ok and secrets.compare_digest(credentials.username.encode(), b"admin")
+```
 
 `Security(dependency, scopes=[...])` is `Depends` that also requires OAuth2
 scopes, as in FastAPI. A dependency annotated with `SecurityScopes` (from
@@ -947,11 +1053,24 @@ sibling is served with `Content-Encoding` and its own `ETag`, which conditional
 requests are checked against. Ranges apply to the uncompressed file. Files stream from
 disk in 64 KiB chunks, so large files use bounded memory.
 
-A mount serves at most `max_connections` responses at once per worker and
-answers `503` with `Retry-After: 1` beyond that. An HTTP/1.1 connection serves
-one response at a time, so it cannot reach the bound; it keeps HTTP/2 streams
-from each holding a file open. A path that is not valid percent-encoded UTF-8
-is `404`.
+Responses that are sending the same file share one open descriptor, which
+they read by position, so a hundred HTTP/2 streams of one file hold one
+descriptor. A worker keeps at most `max_connections` distinct files open at
+once for its mounts and route `FileResponse` bodies together, and answers
+`503` with `Retry-After: 1` for a file that is not open yet beyond that. An
+HTTP/1.1 connection sends one response at a time, so HTTP/1.1 cannot reach
+the bound, and HTTP/2 streams cannot hold more files open than that many
+connections could. `304`, `404`, `416` and `HEAD` responses open no body and
+are never refused. A file replaced while it is being sent is a different
+file: responses already under way finish with the one their headers
+describe, and new ones get the new file. A file truncated while it is being
+sent ends its responses with an error instead of a short body. A path that is
+not valid percent-encoded UTF-8 is `404`.
+
+On Unix a file is opened by its resolved path beneath the mount's directory,
+which is held open from start-up, following no symlink on the way, so a path
+swapped for a symlink after it was checked is refused; this pinned-descriptor
+protection is Unix-only, and Windows opens the checked path by name.
 
 With `html=True`, a directory, including the mount root, serves its
 `index.html`. A directory URL without its trailing slash gets a `307` redirect
@@ -1001,13 +1120,32 @@ stop quietly when that happens.
   Generator dependencies stay open for the whole session.
 - **Limits.** Inbound messages larger than `max_body_size` close the session
   with `1009`. Sessions count against `max_connections`, not
-  `max_in_flight`.
+  `max_in_flight`: a worker runs at most `max_connections` sessions however
+  they arrive, so HTTP/2 connections, each of which can carry many sessions,
+  cannot raise that number, and a handshake beyond it gets `503`. On one
+  HTTP/2 connection at most 100 sessions are open at once.
 - **Flow control.** Up to 64 received messages, and at most `max_body_size`
   bytes of them (at least 64 KiB) plus one message, wait for the handler
-  before Rust stops reading the socket. A handler that is not receiving
+  before Rust stops taking messages. A handler that is not receiving
   therefore holds a bounded amount per session; the rest stays in the
   client's and the kernel's socket buffers. `send_*` waits only while more than 1 MiB is
   queued for a slow client.
+- **Lost peers while the handler is behind.** While messages wait for the
+  handler, Rust still fills its fixed 16 KiB input buffer, so a client that
+  closes or resets the connection is noticed. Messages already buffered stay
+  readable, in order and up to a close frame and its code, for as long as the
+  handler keeps consuming at least one every 5 seconds; then the session ends
+  as a lost connection (`1006`). A handler that never receives is cancelled
+  like any handler whose connection was lost. A send that fails because the
+  peer has gone ends sending (that send and later ones raise
+  `WebSocketDisconnect`), not the messages the peer sent before it went:
+  those still reach a handler that keeps receiving, in order, followed by
+  the peer's close code if it sent one and `1006` otherwise, on the same
+  terms as after the end of the stream (at least one consumed every 5
+  seconds, and the connection read only while it keeps giving data). A
+  handler that is not receiving is released 5 seconds after the failed send.
+  A client that fills the input buffer and then leaves is only noticed on
+  the next send.
 
 Rust delivers messages that are already readable in one batch per loop
 wake-up. The writer combines queued frames into a single socket write. A
@@ -1022,7 +1160,9 @@ in `cors`; a wildcard is not sufficient. Configure the trusted browser origins
 for WebSockets. Clients without `Origin` can still connect, so applications
 must authenticate them as well.
 HTTP/2 clients can open WebSockets by extended CONNECT (RFC 8441) on the same
-routes; the handler sees the same request either way.
+routes; the handler sees the same request either way. An extended CONNECT to
+anything else, such as an ordinary `GET` route, is refused with `400` before
+any handler runs (authentication still answers first).
 
 `--websocket-compression deflate` (or `App.run(websocket_compression=
 "deflate")`) accepts `permessage-deflate` (RFC 7692) from clients that offer
@@ -1151,14 +1291,19 @@ present a certificate chaining to that bundle (or may, with
 `--tls-client-auth optional`), and the verified leaf is available as
 `request.client_certificate` (DER bytes; also on `WebSocket`).
 `--tls-client-crl` refuses revoked client certificates; every client
-certificate's issuer then needs a current CRL in that file.
+certificate's issuer then needs a current CRL in that file. With
+`--tls-client-ca`, TLS sessions are never resumed (no session cache, no
+session tickets), so every connection does a full handshake and its client
+certificate is checked against the current time and CRLs.
 `--tls-ocsp-response` staples a DER OCSP response that something else keeps
 fresh. Rotated
 certificate files are picked up without a restart, checked every
 `--tls-reload-interval` seconds (default 60). Missing files,
 a mismatched pair or a lone setting fail at startup. HTTP/2 is served alongside HTTP/1.1 (`--http auto`, by ALPN
 over TLS and prior knowledge on plaintext); `--http 1.1` turns it off. Supported runtime settings resolve CLI > `BESSEMER_*`
-environment > `[tool.bessemer]` > defaults. Python response normalization is
+environment > `[tool.bessemer]` > defaults; a mistyped `BESSEMER_*` name
+(a near miss of a setting, or any unknown `BESSEMER_TLS_*` name) stops startup
+instead of being ignored. Python response normalization is
 bounded; user code and Pydantic validation/serialization may allocate before the
 runtime rejects an oversized result. Avoid constructing unbounded responses.
 The request-target limit measures the normalized `http::Uri`, whose parser may
