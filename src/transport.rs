@@ -978,6 +978,8 @@ async fn serve_http2<S, F>(
     let sessions = Arc::new(Semaphore::new(HTTP2_MAX_STREAMS as usize));
     let on_response = Arc::new(on_response);
     let max_headers = limits.max_headers;
+    // The connection's own places for streams waiting for their bodies.
+    let body_waits = crate::budget::ConnectionWaits::default();
     let service = {
         let activity = activity.clone();
         service_fn(move |request: Request<hyper::body::Incoming>| {
@@ -987,6 +989,7 @@ async fn serve_http2<S, F>(
             let activity = activity.clone();
             let sessions = sessions.clone();
             let headers = headers.clone();
+            let body_waits = body_waits.clone();
             // Dropped with the stream, including when the client resets it.
             let stream = ActiveStream::new(activity.clone());
             async move {
@@ -994,9 +997,12 @@ async fn serve_http2<S, F>(
                 let mut response = match http2_origin_form(&mut request, max_headers) {
                     Some(rejection) => rejection,
                     None => {
-                        request.extensions_mut().insert(ConnectInfo(peer));
+                        // The peer is given to the router directly, so the
+                        // one extension a stream gets is its connection's
+                        // places to wait in, not `ConnectInfo` as well.
+                        request.extensions_mut().insert(body_waits);
                         if !is_websocket_connect(&request) {
-                            checked.call(request, None, None).await
+                            checked.call(request, Some(peer), None).await
                         } else if let Ok(permit) = sessions.try_acquire_owned() {
                             // RFC 8441: route it like the HTTP/1.1 GET
                             // handshake. The handler holds the permit, and the
@@ -1011,7 +1017,7 @@ async fn serve_http2<S, F>(
                                 ))),
                                 ..context
                             });
-                            checked.call(request, None, None).await
+                            checked.call(request, Some(peer), None).await
                         } else {
                             crate::error(
                                 StatusCode::SERVICE_UNAVAILABLE,

@@ -151,26 +151,58 @@ pub(crate) enum ReadError {
     Full,
     TooLarge,
     Malformed,
-    /// More of the body had to be waited for, and as many requests as the
-    /// worker allows are waiting for theirs already.
+    /// More of the body had to be waited for on an HTTP/2 connection that has
+    /// used its own places, and the worker's shared places are all taken.
     Waiting,
 }
 
-/// The requests of a worker that are waiting, without an admission slot,
-/// for more of their bodies (see [`buffer_body`]).
+/// How many streams of one HTTP/2 connection may always wait for their bodies
+/// without an admission slot, whatever other connections do.
+///
+/// Clients that upload in parallel commonly run four to eight transfers at
+/// once (browsers kept six connections a host before HTTP/2), and a client
+/// such as the `h2` library sends every request head before any body, so each
+/// of those transfers waits at least briefly. Each place costs the memory of a
+/// parked stream, about 7 KiB, so the worst case grows by this many streams a
+/// connection beyond the shared pool.
+pub(crate) const HTTP2_CONNECTION_WAITS: usize = 8;
+
+/// The worker's shared places for requests waiting, without an admission
+/// slot, for more of their bodies (see [`buffer_body`]).
 ///
 /// A waiting request holds a connection, a deadline and its future but no
-/// `max_in_flight` slot, so without this bound HTTP/2, which carries many
-/// streams a connection, would let a client park that many per connection.
-/// It is sized by `max_connections`, the bound HTTP/1.1 has already (one
-/// request a connection), so HTTP/1.1 is never refused by it.
+/// `max_in_flight` slot, so without a bound HTTP/2, which carries many streams
+/// a connection, would let a client park that many per connection. HTTP/1.1
+/// carries one request at a time, so its connections bound it already: its
+/// reads take no place and are never refused. An HTTP/2 stream takes one of
+/// its own connection's [`HTTP2_CONNECTION_WAITS`] places first and draws on
+/// this pool, sized by `max_connections`, only beyond them. Parked streams can
+/// therefore use up the pool but never another connection's own places, and
+/// the worker's total is at most `HTTP2_CONNECTION_WAITS` a connection plus
+/// the pool.
 pub(crate) struct BodyWaits {
     waiting: AtomicUsize,
     limit: usize,
 }
 
+/// One HTTP/2 connection's own places to wait in, as a request extension.
+/// Created once a connection; a request clones only the `Arc`.
+#[derive(Clone, Default)]
+pub(crate) struct ConnectionWaits(Arc<AtomicUsize>);
+
 /// One request's place among those waiting for a body, given back on drop.
-pub(crate) struct BodyWait<'a>(&'a BodyWaits);
+/// HTTP/1.1 reads hold one that counts nothing.
+pub(crate) struct BodyWait<'a>(Option<&'a AtomicUsize>);
+
+/// Take one of `limit` places counted by `count`, if one is free.
+fn take(count: &AtomicUsize, limit: usize) -> Option<BodyWait<'_>> {
+    count
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |waiting| {
+            (waiting < limit).then_some(waiting + 1)
+        })
+        .ok()
+        .map(|_| BodyWait(Some(count)))
+}
 
 impl BodyWaits {
     pub(crate) fn new(limit: usize) -> Self {
@@ -180,15 +212,18 @@ impl BodyWaits {
         }
     }
 
-    /// A place to wait in, or `None` when every place is taken. Only a count:
-    /// nothing waits for a place, so no waiter list is kept or locked.
-    pub(crate) fn enter(&self) -> Option<BodyWait<'_>> {
-        self.waiting
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |waiting| {
-                (waiting < self.limit).then_some(waiting + 1)
-            })
-            .ok()
-            .map(|_| BodyWait(self))
+    /// A place to wait in for a request on `connection` (`None` for HTTP/1.1,
+    /// which needs none), or `None` when the connection's own places and the
+    /// shared ones are all taken. Only counts: nothing waits for a place, so
+    /// no waiter list is kept or locked.
+    pub(crate) fn enter<'a>(
+        &'a self,
+        connection: Option<&'a ConnectionWaits>,
+    ) -> Option<BodyWait<'a>> {
+        let Some(connection) = connection else {
+            return Some(BodyWait(None));
+        };
+        take(&connection.0, HTTP2_CONNECTION_WAITS).or_else(|| take(&self.waiting, self.limit))
     }
 
     #[cfg(test)]
@@ -197,9 +232,18 @@ impl BodyWaits {
     }
 }
 
+impl ConnectionWaits {
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 impl Drop for BodyWait<'_> {
     fn drop(&mut self) {
-        self.0.waiting.fetch_sub(1, Ordering::Relaxed);
+        if let Some(count) = self.0 {
+            count.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -241,14 +285,16 @@ fn keep(pieces: &mut Vec<Piece>, data: Bytes) {
 /// takes a slot again once the body is complete. A body that is already here
 /// (one that arrived with its head) never waits and keeps the slot it has.
 ///
-/// A read that waits takes a place in `waits` instead, held until it returns
+/// A read that waits on an HTTP/2 connection (one whose request `extensions`
+/// carry its [`ConnectionWaits`]) takes a place instead, held until it returns
 /// or is dropped, and is refused (`ReadError::Waiting`) when none is free. A
-/// body that never waits, including an empty one, does not touch `waits`.
+/// body that never waits, including an empty one, looks for no place.
 pub(crate) async fn buffer_body(
     mut body: Body,
     maximum: usize,
     budget: &ByteBudget,
     waits: &BodyWaits,
+    extensions: &axum::http::Extensions,
     slot: &mut Option<OwnedSemaphorePermit>,
 ) -> Result<(Bytes, BytePermit), ReadError> {
     // A body that arrives as one frame is returned as it is, with no copy;
@@ -266,7 +312,7 @@ pub(crate) async fn buffer_body(
             Poll::Pending => {
                 *slot = None;
                 if waiting.is_none() {
-                    match waits.enter() {
+                    match waits.enter(extensions.get::<ConnectionWaits>()) {
                         Some(place) => waiting = Some(place),
                         None => return Poll::Ready(Err(ReadError::Waiting)),
                     }
@@ -328,6 +374,7 @@ pub(crate) async fn buffer_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::Extensions;
     use http_body::{Body as HttpBody, Frame};
     use std::{
         collections::VecDeque,
@@ -440,6 +487,7 @@ mod tests {
             8,
             &budget,
             &UNBOUNDED,
+            &Extensions::new(),
             &mut None,
         )
         .await
@@ -463,6 +511,7 @@ mod tests {
             64 * 1024,
             &budget,
             &UNBOUNDED,
+            &Extensions::new(),
             &mut None,
         )
         .await
@@ -530,9 +579,10 @@ mod tests {
             });
             let admission = Arc::new(Semaphore::new(1));
             let mut slot = Some(admission.try_acquire_owned().unwrap());
-            let (data, permit) = buffer_body(body, 4, &budget, &UNBOUNDED, &mut slot)
-                .await
-                .unwrap();
+            let (data, permit) =
+                buffer_body(body, 4, &budget, &UNBOUNDED, &Extensions::new(), &mut slot)
+                    .await
+                    .unwrap();
             assert_eq!(data.as_ptr(), address);
             assert_eq!(polls.load(Ordering::Relaxed), expected_polls);
             assert!(slot.is_some());
@@ -550,6 +600,7 @@ mod tests {
             8,
             &budget,
             &UNBOUNDED,
+            &Extensions::new(),
             &mut None,
         )
         .await;
@@ -560,6 +611,7 @@ mod tests {
             4,
             &budget,
             &UNBOUNDED,
+            &Extensions::new(),
             &mut None,
         )
         .await;
@@ -574,7 +626,7 @@ mod tests {
             pending: false,
         });
         assert!(matches!(
-            buffer_body(body, 4, &budget, &UNBOUNDED, &mut None).await,
+            buffer_body(body, 4, &budget, &UNBOUNDED, &Extensions::new(), &mut None).await,
             Err(ReadError::Malformed)
         ));
         assert_eq!(budget.0.available_permits(), 4);
@@ -614,6 +666,7 @@ mod tests {
             8,
             &budget,
             &UNBOUNDED,
+            &Extensions::new(),
             &mut slot,
         )
         .await
@@ -622,9 +675,16 @@ mod tests {
         assert!(slot.is_some());
         assert_eq!(capacity.available_permits(), 0);
 
-        let (data, _permit) = buffer_body(Body::new(Late(0)), 8, &budget, &UNBOUNDED, &mut slot)
-            .await
-            .unwrap();
+        let (data, _permit) = buffer_body(
+            Body::new(Late(0)),
+            8,
+            &budget,
+            &UNBOUNDED,
+            &Extensions::new(),
+            &mut slot,
+        )
+        .await
+        .unwrap();
         assert_eq!(&data[..], b"1234");
         assert!(slot.is_none());
         assert_eq!(capacity.available_permits(), 1);
@@ -635,11 +695,13 @@ mod tests {
         let budget = ByteBudget::new(8);
         let capacity = Arc::new(Semaphore::new(1));
         let mut slot = Some(capacity.clone().try_acquire_owned().unwrap());
+        let http1 = Extensions::new();
         let mut read = std::pin::pin!(buffer_body(
             frames(&[b"1"], true),
             8,
             &budget,
             &UNBOUNDED,
+            &http1,
             &mut slot
         ));
         let mut context = Context::from_waker(std::task::Waker::noop());
@@ -649,108 +711,286 @@ mod tests {
         assert_eq!(budget.available(), 7);
     }
 
+    /// The request extensions of a stream on the HTTP/2 connection `own`.
+    fn http2(own: &ConnectionWaits) -> Extensions {
+        let mut extensions = Extensions::new();
+        extensions.insert(own.clone());
+        extensions
+    }
+
+    /// Take every one of `own`'s places, as its other parked streams would.
+    fn fill<'a>(waits: &'a BodyWaits, own: &'a ConnectionWaits) -> Vec<BodyWait<'a>> {
+        (0..HTTP2_CONNECTION_WAITS)
+            .map(|_| waits.enter(Some(own)).unwrap())
+            .collect()
+    }
+
     #[tokio::test]
     async fn a_body_that_is_here_never_takes_a_place_to_wait() {
         // No place at all: a read that asked for one would be refused.
         let waits = BodyWaits::new(0);
+        let own = ConnectionWaits::default();
+        let _full = fill(&waits, &own);
+        let extensions = http2(&own);
         let budget = ByteBudget::new(16);
         let (data, _permit) = buffer_body(
             frames(&[b"12", b"34"], false),
             8,
             &budget,
             &waits,
+            &extensions,
             &mut None,
         )
         .await
         .unwrap();
         assert_eq!(&data[..], b"1234");
-        let (data, _permit) = buffer_body(Body::empty(), 8, &budget, &waits, &mut None)
-            .await
-            .unwrap();
+        let (data, _permit) =
+            buffer_body(Body::empty(), 8, &budget, &waits, &extensions, &mut None)
+                .await
+                .unwrap();
         assert!(data.is_empty());
-        let (data, _permit) = buffer_body(Body::from("1234"), 8, &budget, &waits, &mut None)
-            .await
-            .unwrap();
+        let (data, _permit) = buffer_body(
+            Body::from("1234"),
+            8,
+            &budget,
+            &waits,
+            &extensions,
+            &mut None,
+        )
+        .await
+        .unwrap();
         assert_eq!(&data[..], b"1234");
         assert_eq!(waits.waiting(), 0);
+        assert_eq!(own.waiting(), HTTP2_CONNECTION_WAITS);
         // The first wait is refused, with its received bytes released.
         let available = budget.available();
         assert_eq!(
-            buffer_body(Body::new(Late(0)), 8, &budget, &waits, &mut None)
-                .await
-                .err(),
+            buffer_body(
+                Body::new(Late(0)),
+                8,
+                &budget,
+                &waits,
+                &extensions,
+                &mut None
+            )
+            .await
+            .err(),
             Some(ReadError::Waiting)
         );
         assert_eq!(budget.available(), available);
+        assert_eq!(own.waiting(), HTTP2_CONNECTION_WAITS);
+    }
+
+    #[tokio::test]
+    async fn http1_reads_take_no_place_and_are_never_refused() {
+        // Not a single shared place, and none needed.
+        let waits = BodyWaits::new(0);
+        let budget = ByteBudget::new(8);
+        let http1 = Extensions::new();
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        let mut slots: Vec<Option<OwnedSemaphorePermit>> = (0..4).map(|_| None).collect();
+        let mut parked = Vec::new();
+        for slot in &mut slots {
+            let mut read = Box::pin(buffer_body(
+                frames(&[b"1"], true),
+                8,
+                &budget,
+                &waits,
+                &http1,
+                slot,
+            ));
+            assert!(std::future::Future::poll(read.as_mut(), &mut context).is_pending());
+            parked.push(read);
+        }
+        let (data, _permit) =
+            buffer_body(Body::new(Late(0)), 8, &budget, &waits, &http1, &mut None)
+                .await
+                .unwrap();
+        assert_eq!(&data[..], b"1234");
+        assert_eq!(waits.waiting(), 0);
     }
 
     #[tokio::test]
     async fn waiting_reads_are_bounded_and_give_their_places_back() {
         let waits = BodyWaits::new(1);
+        let own = ConnectionWaits::default();
+        let other = ConnectionWaits::default();
+        let extensions = http2(&own);
         let budget = ByteBudget::new(8);
+        let unbudgeted = ByteBudget::new(64);
         let capacity = Arc::new(Semaphore::new(2));
         let mut context = Context::from_waker(std::task::Waker::noop());
 
+        // The connection's own places are used before the shared one.
+        let mut slots: Vec<Option<OwnedSemaphorePermit>> =
+            (0..HTTP2_CONNECTION_WAITS).map(|_| None).collect();
+        let mut parked = Vec::new();
+        for (count, slot) in (1..).zip(&mut slots) {
+            let mut read = Box::pin(buffer_body(
+                frames(&[], true),
+                8,
+                &unbudgeted,
+                &waits,
+                &extensions,
+                slot,
+            ));
+            assert!(std::future::Future::poll(read.as_mut(), &mut context).is_pending());
+            parked.push(read);
+            assert_eq!((own.waiting(), waits.waiting()), (count, 0));
+        }
         let mut first_slot = Some(capacity.clone().try_acquire_owned().unwrap());
         let mut first = Box::pin(buffer_body(
             frames(&[b"1"], true),
             8,
             &budget,
             &waits,
+            &extensions,
             &mut first_slot,
         ));
         assert!(std::future::Future::poll(first.as_mut(), &mut context).is_pending());
-        assert_eq!(waits.waiting(), 1);
+        assert_eq!(
+            (own.waiting(), waits.waiting()),
+            (HTTP2_CONNECTION_WAITS, 1)
+        );
 
         // Every place is taken: the next read that has to wait is refused at
         // once, gives up its slot and keeps none of its bytes.
         let mut second_slot = Some(capacity.clone().try_acquire_owned().unwrap());
-        let refused =
-            buffer_body(frames(&[b"2"], true), 8, &budget, &waits, &mut second_slot).await;
+        let refused = buffer_body(
+            frames(&[b"2"], true),
+            8,
+            &budget,
+            &waits,
+            &extensions,
+            &mut second_slot,
+        )
+        .await;
         assert_eq!(refused.err(), Some(ReadError::Waiting));
         assert!(second_slot.is_none());
         assert_eq!(budget.available(), 7);
         assert_eq!(waits.waiting(), 1);
         // A body that is here is still read in full.
-        let (data, permit) = buffer_body(Body::from("34"), 8, &budget, &waits, &mut None)
-            .await
-            .unwrap();
+        let (data, permit) =
+            buffer_body(Body::from("34"), 8, &budget, &waits, &extensions, &mut None)
+                .await
+                .unwrap();
         assert_eq!(&data[..], b"34");
         drop(permit);
+        // Another connection still has its own places.
+        let elsewhere = http2(&other);
+        let (data, _permit) = buffer_body(
+            Body::new(Late(0)),
+            8,
+            &unbudgeted,
+            &waits,
+            &elsewhere,
+            &mut None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(&data[..], b"1234");
+        assert_eq!(other.waiting(), 0);
 
         // Cancelled (a request deadline, a reset stream): its place is free.
         drop(first);
         assert_eq!(waits.waiting(), 0);
         assert_eq!(budget.available(), 8);
+        drop(parked);
+        assert_eq!(own.waiting(), 0);
 
         // One that waits and completes holds its place only until it returns.
-        let (data, _permit) = buffer_body(Body::new(Late(0)), 8, &budget, &waits, &mut None)
-            .await
-            .unwrap();
+        let (data, _permit) = buffer_body(
+            Body::new(Late(0)),
+            8,
+            &budget,
+            &waits,
+            &extensions,
+            &mut None,
+        )
+        .await
+        .unwrap();
         assert_eq!(&data[..], b"1234");
-        assert_eq!(waits.waiting(), 0);
+        assert_eq!((own.waiting(), waits.waiting()), (0, 0));
         // And a failed one gives it back too.
         assert_eq!(
-            buffer_body(Body::new(Late(0)), 3, &budget, &waits, &mut None)
-                .await
-                .err(),
+            buffer_body(
+                Body::new(Late(0)),
+                3,
+                &budget,
+                &waits,
+                &extensions,
+                &mut None
+            )
+            .await
+            .err(),
             Some(ReadError::TooLarge)
         );
-        assert_eq!(waits.waiting(), 0);
+        assert_eq!((own.waiting(), waits.waiting()), (0, 0));
     }
 
     #[test]
     fn places_to_wait_are_counted_exactly() {
         let waits = BodyWaits::new(2);
-        let first = waits.enter().unwrap();
-        let second = waits.enter().unwrap();
-        assert!(waits.enter().is_none());
-        assert_eq!(waits.waiting(), 2);
-        drop(first);
-        let third = waits.enter().unwrap();
-        assert!(waits.enter().is_none());
-        drop((second, third));
+        let (first, second) = (ConnectionWaits::default(), ConnectionWaits::default());
+        // HTTP/1.1 counts nothing.
+        let http1: Vec<_> = (0..100).map(|_| waits.enter(None).unwrap()).collect();
         assert_eq!(waits.waiting(), 0);
+        let own = fill(&waits, &first);
+        assert_eq!(
+            (first.waiting(), waits.waiting()),
+            (HTTP2_CONNECTION_WAITS, 0)
+        );
+        let shared = waits.enter(Some(&first)).unwrap();
+        let more = waits.enter(Some(&first)).unwrap();
+        assert!(waits.enter(Some(&first)).is_none());
+        assert_eq!(waits.waiting(), 2);
+        // The pool is gone, but the second connection's own places are not.
+        let theirs = fill(&waits, &second);
+        assert!(waits.enter(Some(&second)).is_none());
+        // A shared place given back goes to whoever asks next.
+        drop(shared);
+        let taken = waits.enter(Some(&second)).unwrap();
+        assert!(waits.enter(Some(&first)).is_none());
+        drop((http1, own, more, theirs, taken));
+        assert_eq!(
+            (first.waiting(), second.waiting(), waits.waiting()),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn concurrent_takes_and_returns_never_exceed_or_leak_a_place() {
+        use std::sync::atomic::AtomicBool;
+        const POOL: usize = 3;
+        let waits = BodyWaits::new(POOL);
+        let connections: Vec<ConnectionWaits> =
+            (0..4).map(|_| ConnectionWaits::default()).collect();
+        let over = AtomicBool::new(false);
+        let mut taken = [0usize; 8];
+        std::thread::scope(|scope| {
+            for (thread, taken) in taken.iter_mut().enumerate() {
+                let (waits, connections, over) = (&waits, &connections, &over);
+                scope.spawn(move || {
+                    let own = &connections[thread % connections.len()];
+                    let mut held = Vec::new();
+                    for round in 0..20_000usize {
+                        if round % 3 == 2 || held.len() > HTTP2_CONNECTION_WAITS {
+                            held.pop();
+                        } else if let Some(place) = waits.enter(Some(own)) {
+                            held.push(place);
+                            *taken += 1;
+                        }
+                        if own.waiting() > HTTP2_CONNECTION_WAITS || waits.waiting() > POOL {
+                            over.store(true, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert!(!over.load(Ordering::Relaxed));
+        assert!(taken.iter().all(|&count| count > 0));
+        assert_eq!(waits.waiting(), 0);
+        assert!(connections.iter().all(|own| own.waiting() == 0));
     }
 
     #[tokio::test]
@@ -758,7 +998,14 @@ mod tests {
         let budget = ByteBudget::new(4);
         let result = tokio::time::timeout(
             Duration::from_millis(1),
-            buffer_body(frames(&[b"123"], true), 4, &budget, &UNBOUNDED, &mut None),
+            buffer_body(
+                frames(&[b"123"], true),
+                4,
+                &budget,
+                &UNBOUNDED,
+                &Extensions::new(),
+                &mut None,
+            ),
         )
         .await;
         assert!(result.is_err());

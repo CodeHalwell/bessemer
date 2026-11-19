@@ -190,20 +190,26 @@ wait). A client that declares a body and sends it slowly, or not at all,
 therefore holds a connection and whatever it has sent of the request byte
 budget until the request timeout, but no admission slot.
 
-Requests waiting for more of an in-memory body are bounded instead, per
-worker, by `max_connections`: the bound HTTP/1.1 already has, one request a
-connection, so HTTP/1.1 traffic alone never reaches it. It matters for HTTP/2,
-where each connection carries up to 100 streams: a request that has to wait
-for its body when `max_connections` requests are waiting already is answered
-`503` with `Retry-After: 1` at once, as an admission refusal is. On HTTP/1.1
-that response closes the connection, since the body is unread; on HTTP/2 only
-the stream is answered and reset, and the connection stays open. A request
-holds its place only while it waits: it gives it back when its body is
-complete (and then asks for an admission slot as above), at the request
-timeout, when the client resets the stream and on every other exit. A body
-that is complete when the request is dispatched, and a request without a body,
-never take a place. Spooled uploads are bounded by their own lifetime slots
-(below), not by this.
+HTTP/1.1 requests waiting for more of an in-memory body need no further
+bound: a connection carries one request at a time, so `max_connections`
+bounds them, and they are never refused for waiting. HTTP/2 carries up to 100
+streams a connection, so its streams waiting for their bodies are bounded
+instead. Each connection may always have 8 streams waiting, whatever other
+connections do; beyond those it draws on places shared by the worker,
+`max_connections` of them. A stream that has to wait when its connection's own
+places and the shared ones are all taken is answered `503` with
+`Retry-After: 1` at once, as an admission refusal is; only that stream is
+answered and reset, and the connection stays open. Streams parked by one
+client can therefore take the shared places but never another connection's
+own, a worker has at most 8 streams a connection plus `max_connections`
+waiting, and without such a client an ingress multiplexing many slow uploads
+over a few connections has every shared place. A stream holds its place only
+while it waits: it gives it back when its body is complete (and then asks for
+an admission slot as above), at the request timeout, when the client resets
+the stream or the connection closes, and on every other exit. A body that is
+complete when the request is dispatched, and a request without a body, never
+take a place. Spooled uploads take none either: each holds one of its own
+lifetime slots (below) from its first read, waiting or not, which bounds them.
 
 Disk-spooled uploads also take a separate lifetime slot, with the same
 per-worker ceiling as `max_in_flight`. It remains held while the client is

@@ -124,6 +124,26 @@ class _H2Client:
         self.flush()
         return self, stream
 
+    def upload(self, length, path="/echo"):
+        """Send the head of an upload of ``length`` bytes, and none of its body."""
+        stream = self.connection.get_next_available_stream_id()
+        self.connection.send_headers(
+            stream,
+            [
+                (":method", "POST"),
+                (":scheme", "http"),
+                (":authority", "t"),
+                (":path", path),
+                ("content-length", str(length)),
+            ],
+        )
+        self.flush()
+        return self, stream
+
+    def finish(self, stream, data):
+        self.connection.send_data(stream, data, end_stream=True)
+        self.flush()
+
     def request(self, path):
         own = [self.open(path, end=True)]
         found = _answered(own, lambda found: len(found) == 1)
@@ -175,6 +195,160 @@ def _answered(streams, done, timeout=30):
 
 def _all_answered(streams):
     return _answered(streams, lambda found: len(found) == len(streams))
+
+
+# How many streams of one HTTP/2 connection may always wait for their bodies
+# (`budget::HTTP2_CONNECTION_WAITS`).
+OWN_PLACES = 8
+
+
+def _park(test, peer, count):
+    """Open ``count`` uploads that send no body, and one more that is refused.
+
+    Returns the ``count`` streams left waiting, once the extra one has been
+    answered ``503`` and none of the others has.
+    """
+    streams = [peer.upload(10) for _ in range(count + 1)]
+    found = _answered(streams, lambda found: len(found) >= 1)
+    test.assertEqual(list(found.values()), [503])
+    return [stream for stream in streams if stream not in found]
+
+
+class _Fresh:
+    """Connects anew each time it is called, closing the last connection."""
+
+    def __init__(self, port):
+        self.port = port
+        self.last = None
+
+    def __call__(self):
+        self.close()
+        self.last = _H2Client(self.port)
+        return self.last
+
+    def close(self):
+        if self.last is not None:
+            self.last.close()
+
+
+def _park_until_admitted(test, connect, count):
+    """Check that a connection can have ``count`` streams waiting, and no more.
+
+    The streams that wait are then sent their bodies, and must all be served.
+    Retried for a while, as a reset or a closed connection reaches the server
+    after the client has moved on.
+    """
+    deadline = time.monotonic() + 30
+    while True:
+        peer = connect()
+        streams = [peer.upload(10) for _ in range(count + 1)]
+        found = _answered(streams, lambda found: len(found) >= 1)
+        if list(found.values()) == [503]:
+            rest = [stream for stream in streams if stream not in found]
+            for _, stream in rest:
+                peer.finish(stream, b"x" * 10)
+            served = _all_answered(rest)
+            if sorted(served.values()) == [200] * count:
+                return
+        else:
+            for _, stream in streams:
+                if stream not in peer.ended:
+                    peer.reset(stream)
+        test.assertLess(
+            time.monotonic(), deadline, f"places did not come back: {found}"
+        )
+        time.sleep(0.2)
+
+
+def _upload_after_every_head(port, count, size):
+    """Send ``count`` uploads of ``size`` bytes on one connection, every head
+    first and then the bodies, as the ``h2`` library does; return each
+    stream's (status, echoed length) in stream order."""
+    from h2.config import H2Configuration
+    from h2.connection import H2Connection
+    from h2.events import DataReceived, ResponseReceived, StreamEnded, StreamReset
+    from h2.exceptions import StreamClosedError
+
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
+        connection = H2Connection(
+            config=H2Configuration(client_side=True, header_encoding="utf-8")
+        )
+        connection.initiate_connection()
+        bodies = {}
+        for _ in range(count):
+            stream = connection.get_next_available_stream_id()
+            connection.send_headers(
+                stream,
+                [
+                    (":method", "POST"),
+                    (":scheme", "http"),
+                    (":authority", "t"),
+                    (":path", "/echo"),
+                    ("content-length", str(size)),
+                ],
+            )
+            bodies[stream] = b"a" * size
+        raw.sendall(connection.data_to_send())
+        statuses, received, ended = {}, {}, set()
+
+        def push():
+            for stream, rest in list(bodies.items()):
+                if stream in ended:
+                    del bodies[stream]
+                    continue
+                while rest:
+                    try:
+                        window = min(
+                            connection.local_flow_control_window(stream),
+                            connection.max_outbound_frame_size,
+                            len(rest),
+                        )
+                        if window <= 0:
+                            break
+                        connection.send_data(
+                            stream, rest[:window], end_stream=window == len(rest)
+                        )
+                    except StreamClosedError:
+                        # Answered (and reset) without its body.
+                        rest = b""
+                        break
+                    rest = rest[window:]
+                if rest:
+                    bodies[stream] = rest
+                else:
+                    del bodies[stream]
+            raw.sendall(connection.data_to_send())
+
+        push()
+        deadline = time.monotonic() + 30
+        while len(ended) < count:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"uploads not answered: {statuses}")
+            chunk = raw.recv(65536)
+            if not chunk:
+                raise AssertionError("HTTP/2 connection ended")
+            for event in connection.receive_data(chunk):
+                if isinstance(event, ResponseReceived):
+                    statuses[event.stream_id] = int(dict(event.headers)[":status"])
+                elif isinstance(event, DataReceived):
+                    received[event.stream_id] = (
+                        received.get(event.stream_id, b"") + event.data
+                    )
+                    connection.acknowledge_received_data(
+                        event.flow_controlled_length, event.stream_id
+                    )
+                elif isinstance(event, (StreamEnded, StreamReset)):
+                    ended.add(event.stream_id)
+            push()
+    return [
+        (
+            statuses.get(stream),
+            json.loads(received[stream])["length"]
+            if statuses.get(stream) == 200
+            else None,
+        )
+        for stream in sorted(ended)
+    ]
 
 
 class HTTP2Tests(unittest.TestCase):
@@ -395,54 +569,97 @@ class HTTP2Tests(unittest.TestCase):
                     )
 
     @unittest.skipUnless(H2, "requires the h2 package")
-    def test_streams_waiting_for_a_body_are_bounded_by_max_connections(self):
-        # Streams that leave their bodies open hold no admission slot; at most
-        # `max_connections` of them may wait at once, across connections.
-        bound = 6
-        options = {"max_connections": bound, "request_timeout": 3.0}
+    def test_streams_waiting_for_a_body_use_their_own_places_then_shared_ones(self):
+        # Streams that leave their bodies open hold no admission slot. Each
+        # connection has its own places to wait in, and beyond them draws on
+        # `max_connections` places shared by the worker.
+        shared = 4
+        options = {"max_connections": shared, "request_timeout": 3.0}
         with TestClient(build_app(), server_options=options) as client:
             first, second = _H2Client(client._port), _H2Client(client._port)
             try:
-                waiting = [first.open() for _ in range(4)]
-                waiting += [second.open() for _ in range(4)]
-                # Two are refused at once, whichever connection they are on.
-                _answered(waiting, lambda found: list(found.values()).count(503) == 2)
+                waiting = [first.open() for _ in range(OWN_PLACES + shared + 3)]
+                # Only the three beyond both are refused, at once.
+                _answered(waiting, lambda found: list(found.values()).count(503) == 3)
+                # The first connection has every shared place, but not the
+                # second connection's own.
+                theirs = [second.open() for _ in range(OWN_PLACES)]
+                beyond = [second.open()]
+                self.assertEqual(_all_answered(beyond), {beyond[0]: 503})
                 # Requests whose bodies are complete do not wait, and are served.
                 self.assertEqual(second.request("/where")[0], 200)
                 self.assertEqual(client.get("/where").status_code, 200)
-                found = _answered(waiting, lambda found: len(found) == len(waiting))
-                self.assertEqual(sorted(found.values()), [503] * 2 + [504] * bound)
+                found = _all_answered(waiting + theirs)
+                self.assertEqual(
+                    sorted(found.values()),
+                    [503] * 3 + [504] * (2 * OWN_PLACES + shared),
+                )
                 # Answered streams are closed, the refused ones as well: the
                 # server reset each body it did not read, so none stays open.
                 self.assertEqual(first.connection.open_outbound_streams, 0)
                 self.assertEqual(second.connection.open_outbound_streams, 0)
 
                 # Places came back when those streams timed out.
-                again = [first.open() for _ in range(3)]
-                again += [second.open() for _ in range(3)]
-                found = _answered(again, lambda found: len(found) == len(again))
-                self.assertEqual(sorted(found.values()), [504] * bound)
-
-                # And come back when the client resets the streams waiting.
-                held = [first.open() for _ in range(3)]
-                held += [second.open() for _ in range(4)]
-                found = _answered(held, lambda found: 503 in found.values())
-                self.assertEqual(list(found.values()).count(503), 1)
-                for peer, stream in held:
-                    if stream not in peer.ended:
-                        peer.reset(stream)
-                accepted = 0
-                deadline = time.monotonic() + 30
-                while accepted < bound and time.monotonic() < deadline:
-                    streams = [first.open() for _ in range(bound - accepted)]
-                    found = _all_answered(streams)
-                    accepted += list(found.values()).count(504)
-                    if accepted < bound:
-                        time.sleep(0.2)  # Resets not yet processed.
-                self.assertEqual(accepted, bound)
+                again = [first.open() for _ in range(OWN_PLACES + shared)]
+                found = _all_answered(again)
+                self.assertEqual(sorted(found.values()), [504] * len(again))
             finally:
                 first.close()
                 second.close()
+
+    @unittest.skipUnless(H2, "requires the h2 package")
+    def test_places_come_back_after_resets_goaway_and_dropped_connections(self):
+        shared = 4
+        options = {"max_connections": shared, "request_timeout": 60.0}
+        with TestClient(build_app(), server_options=options) as client:
+            port = client._port
+            # Reset streams: their places, own and shared, come back to the
+            # connection that still holds them.
+            peer = _H2Client(port)
+            try:
+                held = _park(self, peer, OWN_PLACES + shared)
+                for _, stream in held:
+                    peer.reset(stream)
+                _park_until_admitted(self, lambda: peer, OWN_PLACES + shared)
+            finally:
+                peer.close()
+            for ending in ("goaway", "drop"):
+                with self.subTest(ending=ending):
+                    peer = _H2Client(port)
+                    _park(self, peer, OWN_PLACES + shared)
+                    if ending == "goaway":
+                        peer.connection.close_connection()
+                        peer.flush()
+                    peer.close()
+                    # A new connection has every shared place again.
+                    fresh = _Fresh(port)
+                    try:
+                        _park_until_admitted(self, fresh, OWN_PLACES + shared)
+                    finally:
+                        fresh.close()
+
+    @unittest.skipUnless(H2, "requires the h2 package")
+    def test_a_client_sending_every_head_before_any_body_is_served(self):
+        # As the `h2` library does: each stream waits for its body briefly.
+        options = {"max_connections": 4}
+        with TestClient(build_app(), server_options=options) as client:
+            for size in (1_000, 30_000):
+                with self.subTest(size=size):
+                    statuses = _upload_after_every_head(client._port, 12, size)
+                    self.assertEqual(statuses, [(200, size)] * 12)
+
+    @unittest.skipUnless(H2, "requires the h2 package")
+    def test_streams_parked_on_another_connection_leave_a_clients_uploads_alone(self):
+        shared = 4
+        options = {"max_connections": shared, "request_timeout": 60.0}
+        with TestClient(build_app(), server_options=options) as client:
+            parked = _H2Client(client._port)
+            try:
+                _park(self, parked, OWN_PLACES + shared)
+                statuses = _upload_after_every_head(client._port, OWN_PLACES, 1_000)
+                self.assertEqual(statuses, [(200, 1_000)] * OWN_PLACES)
+            finally:
+                parked.close()
 
     def test_http_setting_is_validated(self):
         self.assertEqual(settings(argparse.Namespace())["http"], "auto")

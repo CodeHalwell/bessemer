@@ -501,6 +501,14 @@ enum Incoming {
 /// client is quiet. Once nothing is buffered either, the upload only waits:
 /// its slot is released for that time and `waiting` remembers where it came
 /// from.
+///
+/// Unlike a buffered body ([`crate::budget::buffer_body`]) it takes no place
+/// in `BodyWaits` while it waits: every spooled upload, waiting or not, holds
+/// one of `Settings::slots` from before its first read until its spool file
+/// is closed ([`SpoolWriter::new`], refused at once when none is free), and
+/// it has written out its buffer before it waits (`Incoming::Flush`). So what
+/// waiting uploads hold is bounded by that slot count, `max_in_flight` a
+/// worker, and by the request byte budget for their form fields.
 async fn next_frame(
     body: &mut Body,
     buffered: bool,

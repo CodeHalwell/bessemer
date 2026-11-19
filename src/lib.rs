@@ -246,8 +246,9 @@ struct ServerState {
     max_response_size: usize,
     request_bytes: budget::ByteBudget,
     response_bytes: budget::ByteBudget,
-    /// Requests waiting for more of their bodies, which hold no admission
-    /// slot; at most `max_connections`, as HTTP/1.1 has already.
+    /// The shared places of HTTP/2 streams waiting for more of their bodies,
+    /// which hold no admission slot: `max_connections` of them, beyond each
+    /// connection's own (see `budget::BodyWaits`).
     body_waits: budget::BodyWaits,
     request_timeout: Duration,
     /// Request deadlines, swept by one task instead of a timer per request.
@@ -1110,8 +1111,8 @@ async fn handle(
     // slot taken is for work, not for waiting: a request gives it up while it
     // waits for its body and takes one again when the body is in (see
     // `budget::buffer_body` and `uploads::spool`), so a client that declares a
-    // body and does not send it holds none. It holds one of the worker's
-    // `max_connections` places to wait instead, or is refused.
+    // body and does not send it holds none. On HTTP/2 it holds a place to
+    // wait instead (`budget::BodyWaits`), or is refused.
     let Some(permit) = admit(state).await else {
         return capacity_response("Server is at capacity", true);
     };
@@ -1262,6 +1263,7 @@ async fn handle(
                     state.max_body_size,
                     &state.request_bytes,
                     &state.body_waits,
+                    request.extensions(),
                     &mut held.admission,
                 )
                 .await
@@ -1272,9 +1274,8 @@ async fn handle(
             Err(budget::ReadError::Full) => {
                 return capacity_response("Request byte capacity is full", true);
             }
-            // Refused as admission refuses: on HTTP/1.1 the unread body
-            // closes the connection; on HTTP/2 only the stream is answered
-            // (and reset, its body unread).
+            // Refused as admission refuses. Only an HTTP/2 stream is: only
+            // it is answered (and reset, its body unread), not the connection.
             Err(budget::ReadError::Waiting) => {
                 return capacity_response("Server is at capacity", true);
             }
@@ -2668,6 +2669,7 @@ mod tests {
                 8,
                 &request_bytes,
                 &budget::BodyWaits::new(0),
+                &axum::http::Extensions::new(),
                 &mut None,
             )
             .await
@@ -2836,6 +2838,7 @@ mod tests {
             8,
             &request_bytes,
             &budget::BodyWaits::new(0),
+            &axum::http::Extensions::new(),
             &mut None,
         )
         .await
@@ -2895,6 +2898,7 @@ mod tests {
                 8,
                 &request_bytes,
                 &budget::BodyWaits::new(0),
+                &axum::http::Extensions::new(),
                 &mut None,
             )
             .await
@@ -2970,6 +2974,7 @@ mod tests {
             8,
             &request_bytes,
             &budget::BodyWaits::new(0),
+            &axum::http::Extensions::new(),
             &mut None,
         )
         .await
