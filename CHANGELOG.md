@@ -11,6 +11,46 @@ package). Detailed test evidence for each candidate lives in
 
 ### Fixed
 
+- `request.form()` and form models no longer decode a multipart text field
+  with the codec its part names. A part declaring `charset=punycode` was
+  decoded by a quadratic pure-Python codec: 80 KB took 1.2 s and six
+  concurrent 150 KB posts 26 s each, on the sync pool and past the request
+  timeout. Text fields are now always read as UTF-8, as the native form
+  parser reads them, `filename*` must declare UTF-8, and part header
+  parameters are parsed in linear time; a header line with more than 64 `;`
+  is refused with `400`. When a part has both `filename` and `filename*`,
+  `filename*` now wins, and RFC 2231 continuations are no longer joined,
+  both as in the native parser.
+- A WebSocket session now ends when its client disconnects while the handler
+  is behind on receiving. The reader stopped reading the socket once 64
+  messages were waiting, so a handler that never receives, such as a push
+  endpoint, was never told that a client which had sent 64 frames was gone:
+  the handler, its socket and its connection slot were held until the worker
+  restarted. The reader now keeps watching the socket through its existing
+  16 KiB buffer while it waits, and a failed send ends the session too.
+  Messages already buffered are still delivered in order to a handler that
+  keeps receiving; one that does not sees the disconnect and is cancelled
+  within about ten seconds.
+- A worker lets at most `max_connections` requests wait for their bodies
+  without an admission slot. HTTP/1.1 has that bound already, one request a
+  connection, but an HTTP/2 client could park 100 streams a connection by
+  sending headers and no body: 391 KiB over 300 connections held about
+  210 MiB until the request timeout, whatever `max_in_flight` was. A request
+  that has to wait beyond the bound is answered `503` with `Retry-After` at
+  once; on HTTP/2 only that stream is refused. A request whose body arrives
+  with its head is never refused by it.
+- Adding `TrustedHostMiddleware`, `CORSMiddleware` or `GZipMiddleware` to an
+  app that is already mounted raises `ValueError` instead of being accepted
+  and then not enforced, and `build()` repeats the check over every mounted
+  app, so a server-wide option set on a sub-app after `mount()` is refused
+  rather than dropped. Set these on the outermost app.
+- Bessemer's event loop polls for I/O at least every 200 µs while callbacks
+  keep its ready queue busy. With one loop per worker it polled only about
+  every 61st iteration, so one handler doing work in slices separated by
+  `await asyncio.sleep(0)` delayed new connections, native health checks and
+  asyncio readers by about 61 slices: 57 ms behind 1 ms slices and nearly a
+  second behind 20 ms ones. They now wait one to three slices. Instructions
+  per request are unchanged within 0.3%.
 - Queued sync handlers using dependencies, Request injection or HTTP middleware
   no longer start after their request has timed out or its client has left.
   Both sync invocation paths check the closed reply channel before starting.
