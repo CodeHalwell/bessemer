@@ -3,6 +3,7 @@
 import asyncio
 import http.client
 import http.cookiejar
+import select
 import signal
 import threading
 import unittest
@@ -372,6 +373,10 @@ class TestClientTests(unittest.TestCase):
             stale = client._connection
             # Simulate the server closing the idle keep-alive connection.
             stale.sock.shutdown(2)
+            # Linux reports the socket readable at once; Windows only when
+            # the server's own close has come back, which the client waits
+            # for here as it would have between two real requests.
+            select.select([stale.sock], [], [], 5)
             self.assertEqual(client.post("/echo", json={"a": 1}).json(), {"a": 1})
             self.assertIsNot(client._connection, stale)
 
@@ -438,9 +443,12 @@ class TestClientTests(unittest.TestCase):
             TestClient(app) as client,
         ):
             listener = listeners[0]
-            inode = os.fstat(listener.fileno()).st_ino
+            # Still the client's own listening socket after a request: a
+            # closed one has no address, and Windows has no inode to compare.
+            address = listener.getsockname()
             self.assertEqual(client.get("/").status_code, 200)
-            self.assertEqual(os.fstat(listener.fileno()).st_ino, inode)
+            self.assertEqual(listener.getsockname(), address)
+            self.assertEqual(address[1], client._port)
         self.assertEqual(owned, [False])
         self.assertEqual(listener.fileno(), -1)
 

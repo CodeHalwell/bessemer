@@ -818,11 +818,28 @@ class IoTests(LoopTestCase):
 
         self.assertEqual(self.run_soon(main()), b"")
 
+    async def closed_while_pending(self, pending: asyncio.Future) -> None:
+        """What a pending socket operation does once its socket is closed."""
+        if sys.platform == "linux":
+            # epoll and io_uring go on reporting the file a duplicate keeps
+            # open, under the number the next socket now has: the operation
+            # must fail as the call on a closed socket does.
+            with self.assertRaises(OSError) as raised:
+                await asyncio.wait_for(pending, 5)
+            self.assertEqual(raised.exception.errno, errno.EBADF)
+            return
+        # kqueue drops a descriptor's filters when the descriptor is closed,
+        # whatever else keeps the file open, so nothing wakes the operation
+        # (as on asyncio's own loop). It must not have acted for the number's
+        # next owner, which the callers check.
+        _done, waiting = await asyncio.wait({pending}, timeout=0.5)
+        self.assertEqual(waiting, {pending})
+        pending.cancel()
+
     def test_a_pending_sock_recv_fails_once_its_socket_is_closed(self) -> None:
-        # A duplicate keeps the closed socket's file open, so the poller goes
-        # on reporting it under the old number, which the next socket now
-        # has. The pending receive must fail as recv on a closed socket does,
-        # not read the new owner's data.
+        # A duplicate keeps the closed socket's file open while the next
+        # socket takes its number. The pending receive must fail as recv on a
+        # closed socket does, or never run: not read the new owner's data.
         a, a_peer = self.socketpair()
 
         async def main():
@@ -835,9 +852,7 @@ class IoTests(LoopTestCase):
             b, b_peer = self.reused(number)
             b_peer.send(b"SECRET-FOR-B")
             a_peer.send(b"for the closed socket")
-            with self.assertRaises(OSError) as raised:
-                await asyncio.wait_for(receiving, 5)
-            self.assertEqual(raised.exception.errno, errno.EBADF)
+            await self.closed_while_pending(receiving)
             return await asyncio.wait_for(self.loop.sock_recv(b, 100), 5)
 
         self.assertEqual(self.run_soon(main()), b"SECRET-FOR-B")
@@ -854,16 +869,14 @@ class IoTests(LoopTestCase):
             number = a.fileno()
             a.close()
             _b, b_peer = self.reused(number)
-            # Room on the old file: the poller reports it writable under the
-            # number b now has.
+            # Room on the old file, which a poller that still reports it
+            # shows as writable under the number b now has.
             while True:
                 try:
                     a_peer.recv(1 << 20)
                 except BlockingIOError:
                     break
-            with self.assertRaises(OSError) as raised:
-                await asyncio.wait_for(sending, 5)
-            self.assertEqual(raised.exception.errno, errno.EBADF)
+            await self.closed_while_pending(sending)
             try:
                 return b_peer.recv(65536)
             except BlockingIOError:
