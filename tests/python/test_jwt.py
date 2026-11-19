@@ -496,6 +496,13 @@ ENTRA = json.loads(
         / "entra_vectors.json"
     ).read_text()
 )
+ENTRA_V1 = json.loads(
+    (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "fixtures"
+        / "entra_v1_vectors.json"
+    ).read_text()
+)
 
 ENTRA_APPLICATION = """
 import json
@@ -541,6 +548,37 @@ class EntraSigningKeyIssuerHTTPTests(unittest.TestCase):
             ):
                 bearer = ".".join(ENTRA[name])
                 # The second request of each is a verified-token cache hit.
+                for _ in range(2):
+                    with self.subTest(token=name):
+                        status, _, _ = request(
+                            server, "GET", "/me", {"Authorization": f"Bearer {bearer}"}
+                        )
+                        self.assertEqual(status, expected)
+        finally:
+            server.close()
+
+    def test_v1_tokens_are_accepted_by_their_own_tenants_v2_key(self):
+        # One configuration naming both issuer forms and reading the v2.0
+        # key set: a v1.0 token (iss https://sts.windows.net/{tid}/) is signed
+        # by a key published for its tenant's v2.0 issuer.
+        server = Server(
+            application=ENTRA_APPLICATION,
+            environment={
+                "TEST_ENTRA_JWKS": json.dumps(ENTRA_V1["jwks"]),
+                "TEST_ENTRA_ISSUERS": json.dumps(ENTRA_V1["issuers"]),
+            },
+        )
+        try:
+            for name, expected in (
+                ("v1_template_tenant1", 200),
+                ("v1_tenant1_key_for_tenant1", 200),
+                ("v1_tenant1_key_for_tenant2", 401),
+                ("v1_iss_not_tid", 401),
+                ("v1_template_without_tid", 401),
+                ("v2_template_tenant2", 200),
+                ("v2_tenant1_key_for_tenant2", 401),
+            ):
+                bearer = ".".join(ENTRA_V1[name])
                 for _ in range(2):
                     with self.subTest(token=name):
                         status, _, _ = request(

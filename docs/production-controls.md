@@ -369,7 +369,15 @@ Microsoft accounts, for example), and each v2.0 key names the issuer it signs
 for. Under the Entra profile (`entra_access_token`) a key's `issuer` must equal
 the token's `iss`, after a `https://login.microsoftonline.com/{tenantid}/v2.0`
 template takes the token's `tid`, so a key is never used for another tenant's
-issuer. A key without the member (v1.0 key sets publish none) is not restricted:
+issuer. A configuration that lists both issuer forms and reads the v2.0 key
+set also receives v1.0 tokens, whose `iss` is `https://sts.windows.net/{tid}/`
+and which no key's `issuer` names; as in Microsoft's own validator, such a
+token is accepted when its `iss` is exactly `https://<host>/<tid>/` (one path
+segment equal to its string `tid`) and the key's issuer, after the
+substitution, is that tenant's v2.0 issuer (ends with `/<tid>/v2.0`). Any other
+mismatch, a template key with no string `tid`, or a non-string `issuer` member
+is rejected. A key without the member (v1.0 key sets publish none) is not
+restricted:
 
 ```python
 app = App(jwt=JWTAuth.entra(
