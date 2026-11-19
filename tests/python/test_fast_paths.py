@@ -397,5 +397,66 @@ class FastPathHTTPTests(unittest.TestCase):
             self.assertEqual(self.server.request("GET", "/plain-created")[0], 201)
 
 
+SHRINKING_DICT_ROUTES = """
+
+import codecs
+import gc
+import itertools
+
+from bessemer import JSONResponse
+
+MARKER = "shrinking-dict-marker"
+seen = []
+counter = itertools.count()
+
+
+def shrink(error):
+    # jsonable() reaches this first; the native conversion of the copy it
+    # returns is the second call for the same string, and shrinks that copy
+    # while it is being walked.
+    seen.append(error.object)
+    if seen.count(error.object) == 2:
+        for referrer in gc.get_referrers(MARKER):
+            if type(referrer) is dict and "zz" in referrer:
+                referrer.pop("zz")
+    return ("?", error.end)
+
+
+codecs.register_error("strict", shrink)
+
+
+@app.get('/shrinking')
+async def shrinking():
+    key = "b\\ud800" + str(next(counter))
+    return JSONResponse({"a": [1], key: MARKER, "c": 3, "zz": 4})
+"""
+
+
+@unittest.skipUnless(NATIVE, "build the native extension first")
+class ResponseDictMutationHTTPTests(unittest.TestCase):
+    def test_a_response_dict_that_changes_size_is_a_server_error(self):
+        # PyO3's dict iterator panicked here, which ended the worker's event
+        # loop thread: every later request on the worker failed.
+        server = test_native_integration.Server(
+            application=test_native_integration.APPLICATION + SHRINKING_DICT_ROUTES
+        )
+        try:
+            for _ in range(3):
+                status, _, body = server.request("GET", "/shrinking")
+                self.assertEqual(status, 500, body)
+                # A Python route: the native health route does not need the
+                # worker's event loop.
+                status, _, body = server.request("GET", "/items/1?enabled=true")
+                self.assertEqual(
+                    (status, json.loads(body)), (200, {"id": 1, "enabled": True})
+                )
+            server.log.seek(0)
+            output = server.log.read()
+        finally:
+            server.close()
+        self.assertNotIn("panicked", output)
+        self.assertIn("could not encode the response", output)
+
+
 if __name__ == "__main__":
     unittest.main()
