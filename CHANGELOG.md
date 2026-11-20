@@ -9,6 +9,8 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc9] - 2026-11-20
+
 ### Fixed
 
 - Static files and `FileResponse` now choose HEAD headers and conditional
