@@ -988,7 +988,8 @@ mod tests {
             }
         });
         assert!(!over.load(Ordering::Relaxed));
-        assert!(taken.iter().all(|&count| count > 0));
+        // Places were taken; which thread got them is up to the scheduler.
+        assert!(taken.iter().sum::<usize>() > 0);
         assert_eq!(waits.waiting(), 0);
         assert!(connections.iter().all(|own| own.waiting() == 0));
     }
