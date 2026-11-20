@@ -952,12 +952,13 @@ async fn serve_http2<S, F>(
     checked: ProtocolChecked,
     limits: Limits,
     on_response: F,
-    mut stopped: watch::Receiver<bool>,
+    shared_file_chunks: Arc<Semaphore>,
     context: crate::websocket::ConnectionContext,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn() + Send + Sync + 'static,
 {
+    let mut stopped = context.stop.clone();
     let headers = HeaderDeliveries::default();
     let flushed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let io = HeaderDelivery {
@@ -980,6 +981,7 @@ async fn serve_http2<S, F>(
     let max_headers = limits.max_headers;
     // The connection's own places for streams waiting for their bodies.
     let body_waits = crate::budget::ConnectionWaits::default();
+    let file_chunks = crate::budget::FileChunks::new(shared_file_chunks, context._slot.clone());
     let service = {
         let activity = activity.clone();
         service_fn(move |request: Request<hyper::body::Incoming>| {
@@ -990,6 +992,7 @@ async fn serve_http2<S, F>(
             let sessions = sessions.clone();
             let headers = headers.clone();
             let body_waits = body_waits.clone();
+            let file_chunks = file_chunks.clone();
             // Dropped with the stream, including when the client resets it.
             let stream = ActiveStream::new(activity.clone());
             async move {
@@ -997,10 +1000,8 @@ async fn serve_http2<S, F>(
                 let mut response = match http2_origin_form(&mut request, max_headers) {
                     Some(rejection) => rejection,
                     None => {
-                        // The peer is given to the router directly, so the
-                        // one extension a stream gets is its connection's
-                        // places to wait in, not `ConnectInfo` as well.
                         request.extensions_mut().insert(body_waits);
+                        request.extensions_mut().insert(file_chunks);
                         if !is_websocket_connect(&request) {
                             checked.call(request, Some(peer), None).await
                         } else if let Ok(permit) = sessions.try_acquire_owned() {
@@ -1321,6 +1322,7 @@ pub async fn run(
     tls: Option<Arc<crate::tls::Reloadable>>,
 ) -> io::Result<()> {
     let permits = Arc::new(Semaphore::new(limits.max_connections));
+    let shared_file_chunks = Arc::new(Semaphore::new(limits.max_connections));
     let completed = Arc::new(AtomicU64::new(0));
     let recycle = Arc::new(Notify::new());
     let (stop_sender, stop_receiver) = watch::channel(false);
@@ -1405,6 +1407,7 @@ pub async fn run(
             continue;
         }
         let app = app.clone();
+        let shared_file_chunks = shared_file_chunks.clone();
         let completed = completed.clone();
         let recycle = recycle.clone();
         let limits = limits.clone();
@@ -1457,7 +1460,7 @@ pub async fn run(
                 }
                 match sniff_http2(stream, limits.header_timeout, &mut stop).await {
                     Some((true, stream)) => {
-                        serve_http2(stream, peer, protected, limits, count, stopped, context)
+                        serve_http2(stream, peer, protected, limits, count, shared_file_chunks, context)
                             .await;
                     }
                     Some((false, stream)) => {
@@ -1488,7 +1491,8 @@ pub async fn run(
                     client_certificate: crate::tls::client_certificate(stream.get_ref().1),
                 });
                 if stream.get_ref().1.alpn_protocol() == Some(b"h2") {
-                    serve_http2(stream, peer, protected, limits, count, stopped, context).await;
+                    serve_http2(stream, peer, protected, limits, count, shared_file_chunks, context)
+                        .await;
                     return;
                 }
                 serve_http1(
@@ -1631,7 +1635,7 @@ mod tests {
                     }),
                 );
                 let (client_io, server_io) = tokio::io::duplex(65536);
-                let (stop, stopped) = watch::channel(false);
+                let (_stop, stopped) = watch::channel(false);
                 let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
                 let server = tokio::spawn(serve_http2(
                     GatedIo {
@@ -1657,10 +1661,10 @@ mod tests {
                         http2: true,
                     },
                     || {},
-                    stopped,
+                    Arc::new(Semaphore::new(1)),
                     crate::websocket::ConnectionContext {
                         _slot: Arc::new(permit),
-                        stop: stop.subscribe(),
+                        stop: stopped,
                         _stream: None,
                     },
                 ));

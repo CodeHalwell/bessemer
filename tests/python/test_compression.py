@@ -4,6 +4,7 @@ import asyncio
 import gzip
 import http.client
 import os
+import random
 import shutil
 import tempfile
 import threading
@@ -238,12 +239,23 @@ class CompressedFileValidatorTests(unittest.TestCase):
         cls.path = os.path.join(cls.root, "notes.txt")
         with open(cls.path, "wb") as file:
             file.write(TEXT.encode() * 4)
-        app = App(compression=Compression(min_size=512))
+        cls.unprofitable = {
+            "tiny.txt": b"hello\n",
+            "large.txt": random.Random(41).randbytes(32 * 1024),
+        }
+        for name, data in cls.unprofitable.items():
+            with open(os.path.join(cls.root, name), "wb") as file:
+                file.write(data)
+        app = App(compression=Compression(min_size=0))
         app.static("/static", cls.root)
 
         @app.get("/download")
         async def download():
             return FileResponse(cls.path, media_type="text/plain")
+
+        @app.get("/download/{name}")
+        async def download_unprofitable(name: str):
+            return FileResponse(os.path.join(cls.root, name), media_type="text/plain")
 
         cls.client = TestClient(app)
         cls.client.start()
@@ -299,6 +311,39 @@ class CompressedFileValidatorTests(unittest.TestCase):
                 self.assertEqual(part.headers["etag"], strong)
                 self.assertEqual(part.headers["vary"], "Accept-Encoding")
                 self.assertNotIn("content-encoding", part.headers)
+
+    def test_head_and_revalidation_keep_identity_when_compression_expands_a_file(self):
+        for name, data in self.unprofitable.items():
+            for source in ("static", "download"):
+                path = f"/{source}/{name}"
+                for coding in ("gzip", "br"):
+                    with self.subTest(path=path, coding=coding):
+                        headers = {"accept-encoding": coding}
+                        full = self.client.get(path, headers=headers)
+                        self.assertEqual((full.status_code, full.content), (200, data))
+                        self.assertNotIn("content-encoding", full.headers)
+                        etag = full.headers["etag"]
+                        self.assertFalse(etag.startswith("W/"))
+                        head = self.client.head(path, headers=headers)
+                        self.assertEqual((head.status_code, head.content), (200, b""))
+                        self.assertNotIn("content-encoding", head.headers)
+                        self.assertEqual(head.headers["content-length"], str(len(data)))
+                        self.assertEqual(head.headers["etag"], etag)
+                        self.assertEqual(head.headers["vary"], "Accept-Encoding")
+                        for method in ("GET", "HEAD"):
+                            for cond in (
+                                {"if-none-match": etag},
+                                {"if-modified-since": full.headers["last-modified"]},
+                            ):
+                                cached = self.client.request(
+                                    method, path, headers={**headers, **cond}
+                                )
+                                self.assertEqual(cached.status_code, 304)
+                                self.assertEqual(cached.headers["etag"], etag)
+                                self.assertEqual(
+                                    cached.headers["vary"], "Accept-Encoding"
+                                )
+                                self.assertNotIn("content-encoding", cached.headers)
 
 
 MATRIX_TEXT = b"compress me please " * 400

@@ -1045,7 +1045,7 @@ async fn handle(
     path: router::PathParams,
     info: &RequestInfo,
     request: &mut Request,
-    compressing: bool,
+    file_preview: Option<compression::FilePreview>,
     mut direct: Option<&mut controls::DirectHeaders>,
 ) -> Response {
     let head = request.method() == Method::HEAD;
@@ -1092,7 +1092,31 @@ async fn handle(
         }) else {
             return static_files::redirect_to_directory(request.uri());
         };
-        return Box::pin(files.serve(&relative, request.uri(), request.headers(), head)).await;
+        let mut response = Box::pin(
+            files.serve(
+                &relative,
+                request.uri(),
+                static_files::FileRequest::new(
+                    request.headers(),
+                    head,
+                    request.extensions().get::<budget::FileChunks>(),
+                )
+                .with_preview(file_preview),
+            ),
+        )
+        .await;
+        if response
+            .extensions()
+            .get::<static_files::FileProbe>()
+            .is_some()
+        {
+            let deadline =
+                Instant::from_std(info.received) + route.timeout.unwrap_or(state.request_timeout);
+            response
+                .extensions_mut()
+                .insert(ProcessingDeadline(deadline));
+        }
+        return response;
     }
     if route.websocket {
         return Box::pin(handle_websocket(
@@ -1697,7 +1721,15 @@ async fn handle(
                 && let Some((file, metadata)) = pending.take()
             {
                 response = Box::pin(static_files::serve_response_file(
-                    file, metadata, response, headers, head,
+                    file,
+                    metadata,
+                    response,
+                    static_files::FileRequest::new(
+                        headers,
+                        head,
+                        request.extensions().get::<budget::FileChunks>(),
+                    )
+                    .with_preview(file_preview),
                 ))
                 .await;
             }
@@ -1717,9 +1749,9 @@ async fn handle(
             error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
         }
     };
-    // Only buffered compression reads the deadline; inserting it otherwise
+    // Only buffered compression and file previews read the deadline; inserting it otherwise
     // would build an extensions map for every response.
-    if compressing {
+    if file_preview.is_some() {
         response
             .extensions_mut()
             .insert(ProcessingDeadline(deadline));
