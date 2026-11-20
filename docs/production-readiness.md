@@ -41,6 +41,9 @@ batching/native coroutine path and its performance targets are not qualified.
 
 ## 20 November 2026: RC8 file response fixes
 
+Bessemer `1.0.0rc9` includes these two RC8 fixes. The tests and measurements
+below cover the runtime changes in [PR #141](https://github.com/CodeHalwell/bessemer/pull/141).
+
 - For buffered static files and `FileResponse`, HEAD and conditional replies
   use the actual gzip or Brotli result to choose the encoding and validators.
   The preview reads the open file under a whole-file response byte permit and
