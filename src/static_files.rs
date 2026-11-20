@@ -11,7 +11,10 @@
 //! process's [`OpenFiles`] table: one descriptor per distinct file being
 //! sent, shared by every response sending it and read by position.
 
-use crate::compression::{Representation, Reselect};
+use crate::{
+    budget::{ByteBudget, BytePermit, FileChunk, FileChunkWait, FileChunks, WholeFile},
+    compression::{FilePreview, Representation, Reselect},
+};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
@@ -47,11 +50,8 @@ const CHUNK: usize = 64 * 1024;
 /// response at a time per connection, so it never reaches the bound, and
 /// HTTP/2 cannot hold more files open than HTTP/1.1 connections could.
 ///
-/// Sharing a descriptor leaves nothing to bound the bodies themselves, and
-/// each is given its first chunk by the task that opened it, before anything
-/// asks for it. An HTTP/2 stream with no window never asks, so those chunks
-/// are counted too: at most `capacity` bodies hold one, and a body beyond
-/// that reads its first chunk when it is first polled, like every later one.
+/// HTTP/1 prefetches a first chunk when this table has a place. HTTP/2 holds
+/// an owned chunk permit for prefetches and later reads.
 pub(crate) struct OpenFiles {
     capacity: AtomicUsize,
     files: Mutex<HashMap<FileKey, Weak<SharedFile>>>,
@@ -136,16 +136,18 @@ impl OpenFiles {
     }
 }
 
-/// A body's first chunk, read before the body was polled, holding its place
-/// in [`OpenFiles::first_chunks`] until it is handed over or dropped.
+/// A body's first chunk. For HTTP/1 the table counts it until it is handed
+/// over or dropped. For HTTP/2 the bytes own a transport-lifetime permit.
 struct FirstChunk {
     bytes: Bytes,
-    table: Arc<OpenFiles>,
+    table: Option<Arc<OpenFiles>>,
 }
 
 impl Drop for FirstChunk {
     fn drop(&mut self) {
-        self.table.first_chunks.fetch_sub(1, Ordering::Relaxed);
+        if let Some(table) = &self.table {
+            table.first_chunks.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -154,6 +156,40 @@ struct SharedFile {
     file: File,
     key: FileKey,
     table: Arc<OpenFiles>,
+}
+
+#[derive(Clone)]
+pub(crate) struct FileProbe {
+    file: Arc<SharedFile>,
+    length: usize,
+}
+
+impl FileProbe {
+    pub(crate) fn length(&self) -> usize {
+        self.length
+    }
+
+    pub(crate) fn read(&self) -> std::io::Result<Bytes> {
+        let bytes = read_chunk(&self.file.file, 0, self.length)?;
+        if bytes.len() != self.length {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        Ok(bytes)
+    }
+}
+
+enum OpenedFile {
+    Owned(File),
+    Shared(Arc<SharedFile>),
+}
+
+impl OpenedFile {
+    fn share(self, open: &Arc<OpenFiles>, metadata: &std::fs::Metadata) -> Option<Arc<SharedFile>> {
+        match self {
+            Self::Owned(file) => open.share(file, metadata),
+            Self::Shared(file) => Some(file),
+        }
+    }
 }
 
 impl Drop for SharedFile {
@@ -262,6 +298,34 @@ pub(crate) struct StaticDir {
     open: Arc<OpenFiles>,
 }
 
+pub(crate) struct FileRequest {
+    headers: HeaderMap,
+    head: bool,
+    chunks: Option<FileChunks>,
+    preview: Option<FilePreview>,
+}
+
+impl FileRequest {
+    pub(crate) fn new(headers: &HeaderMap, head: bool, chunks: Option<&FileChunks>) -> Self {
+        Self {
+            headers: conditions(headers),
+            head,
+            chunks: chunks.cloned(),
+            preview: None,
+        }
+    }
+
+    pub(crate) fn with_preview(mut self, preview: Option<FilePreview>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    fn wants_probe(&self, response: &Response, length: u64) -> bool {
+        self.preview
+            .is_some_and(|preview| preview.needs_probe(response, length, self.head))
+    }
+}
+
 impl StaticDir {
     pub(crate) fn new(
         directory: &str,
@@ -292,8 +356,7 @@ impl StaticDir {
         self: &Arc<Self>,
         relative: &str,
         uri: &Uri,
-        headers: &HeaderMap,
-        head: bool,
+        request: FileRequest,
     ) -> Response {
         let Some(cleaned) = clean(relative) else {
             return not_found();
@@ -301,16 +364,13 @@ impl StaticDir {
         // Relative links in an index page resolve against its directory, so
         // the URL must end in a slash before the index is served.
         let needs_slash = !relative.is_empty() && !relative.ends_with('/');
-        let request = conditions(headers);
         let files = self.clone();
         let uri = uri.clone();
         // Resolving, probing siblings, opening, validating and the first
         // read are one trip to the blocking pool.
-        tokio::task::spawn_blocking(move || {
-            files.respond(cleaned, needs_slash, uri, request, head, None)
-        })
-        .await
-        .unwrap_or_else(|_| internal_error())
+        tokio::task::spawn_blocking(move || files.respond(cleaned, needs_slash, uri, request, None))
+            .await
+            .unwrap_or_else(|_| internal_error())
     }
 
     /// `exact` is as for [`not_modified`]. Runs on the blocking pool.
@@ -319,22 +379,21 @@ impl StaticDir {
         cleaned: PathBuf,
         needs_slash: bool,
         uri: Uri,
-        headers: HeaderMap,
-        head: bool,
+        request: FileRequest,
         exact: Option<bool>,
     ) -> Response {
-        let mut response = self.select(&cleaned, needs_slash, &uri, &headers, head, exact);
+        let mut response = self.select(&cleaned, needs_slash, &uri, &request, exact);
         // A 304 chosen by comparing If-None-Match weakly may stand for another
         // representation than the one this client is sent; compression,
         // which knows, can have it selected again.
         if exact.is_none()
             && response.status() == StatusCode::NOT_MODIFIED
-            && headers.contains_key(header::IF_NONE_MATCH)
+            && request.headers.contains_key(header::IF_NONE_MATCH)
             && let Some(representation) = response.extensions_mut().get_mut::<Representation>()
         {
             let files = self.clone();
             representation.reselect = Some(Reselect::new(move |weak| {
-                files.respond(cleaned, needs_slash, uri, headers, head, Some(weak))
+                files.respond(cleaned, needs_slash, uri, request, Some(weak))
             }));
         }
         response
@@ -345,10 +404,10 @@ impl StaticDir {
         cleaned: &Path,
         needs_slash: bool,
         uri: &Uri,
-        headers: &HeaderMap,
-        head: bool,
+        request: &FileRequest,
         exact: Option<bool>,
     ) -> Response {
+        let headers = &request.headers;
         let Some((identity, metadata, directory, logical)) = self.resolve(cleaned) else {
             return not_found();
         };
@@ -408,6 +467,15 @@ impl StaticDir {
             let mut response =
                 with_headers(StatusCode::NOT_MODIFIED, response_headers, Body::empty());
             response.extensions_mut().insert(representation);
+            if request.wants_probe(&response, length) {
+                let Some(shared) = self.open.share(file, &metadata) else {
+                    return capacity_full();
+                };
+                response.extensions_mut().insert(FileProbe {
+                    file: shared,
+                    length: length as usize,
+                });
+            }
             return response;
         }
         let mut status = StatusCode::OK;
@@ -452,18 +520,28 @@ impl StaticDir {
             encoded: false,
             reselect: None,
         });
-        let body = if head {
+        let body = if request.head {
             // The length the GET would send, as a header compression can read.
             response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
-            // Only the length is needed: no entry is taken and nothing read.
             Body::new(Unsent(size))
         } else {
+            Body::empty()
+        };
+        let mut response = with_headers(status, response_headers, body);
+        if !request.head {
             let Some(shared) = self.open.share(file, &metadata) else {
                 return capacity_full();
             };
-            Body::new(FileBody::start(shared, start, size))
-        };
-        let mut response = with_headers(status, response_headers, body);
+            FileBody::attach(&mut response, shared, start, size, request.chunks.clone());
+        } else if request.wants_probe(&response, length) {
+            let Some(shared) = self.open.share(file, &metadata) else {
+                return capacity_full();
+            };
+            response.extensions_mut().insert(FileProbe {
+                file: shared,
+                length: length as usize,
+            });
+        }
         if status == StatusCode::OK {
             response.extensions_mut().insert(crate::budget::Unreserved);
         }
@@ -778,17 +856,9 @@ pub(crate) async fn serve_response_file(
     file: File,
     metadata: std::fs::Metadata,
     response: Response,
-    request_headers: &HeaderMap,
-    head: bool,
+    request: FileRequest,
 ) -> Response {
-    respond_with_file(
-        &OPEN_FILES,
-        move || Ok((file, metadata)),
-        response,
-        request_headers,
-        head,
-    )
-    .await
+    respond_with_file(&OPEN_FILES, move || Ok((file, metadata)), response, request).await
 }
 
 /// `source` yields the opened, checked file; it runs on the blocking pool.
@@ -796,16 +866,21 @@ async fn respond_with_file(
     open: &Arc<OpenFiles>,
     source: impl FnOnce() -> std::io::Result<(File, std::fs::Metadata)> + Send + 'static,
     response: Response,
-    request_headers: &HeaderMap,
-    head: bool,
+    request: FileRequest,
 ) -> Response {
     let open = open.clone();
-    let request = conditions(request_headers);
     tokio::task::spawn_blocking(move || {
         let Ok((file, metadata)) = source() else {
             return internal_error();
         };
-        file_response(open, file, metadata, response, request, head, None)
+        file_response(
+            open,
+            OpenedFile::Owned(file),
+            metadata,
+            response,
+            request,
+            None,
+        )
     })
     .await
     .unwrap_or_else(|_| internal_error())
@@ -815,25 +890,39 @@ async fn respond_with_file(
 /// as for [`not_modified`].
 fn file_response(
     open: Arc<OpenFiles>,
-    file: File,
+    file: OpenedFile,
     metadata: std::fs::Metadata,
     response: Response,
-    request: HeaderMap,
-    head: bool,
+    request: FileRequest,
     exact: Option<bool>,
 ) -> Response {
     // What the application sent, kept in case a 304 is to be selected again
     // (see `StaticDir::respond`).
-    let original = (exact.is_none() && request.contains_key(header::IF_NONE_MATCH))
+    let original = (exact.is_none() && request.headers.contains_key(header::IF_NONE_MATCH))
         .then(|| (response.status(), response.headers().clone()));
-    let (mut response, selected) = select_response_file(&metadata, response, &request, head, exact);
+    let (mut response, selected) =
+        select_response_file(&metadata, response, &request.headers, request.head, exact);
     if let Some((start, length)) = selected {
-        let Some(shared) = open.share(file, &metadata) else {
+        let Some(shared) = file.share(&open, &metadata) else {
             return capacity_full();
         };
-        *response.body_mut() = Body::new(FileBody::start(shared, start, length));
+        FileBody::attach(&mut response, shared, start, length, request.chunks);
         response.extensions_mut().insert(crate::budget::Unreserved);
-    } else if response.status() == StatusCode::NOT_MODIFIED
+        return response;
+    }
+    let file = if request.wants_probe(&response, metadata.len()) {
+        let Some(shared) = file.share(&open, &metadata) else {
+            return capacity_full();
+        };
+        response.extensions_mut().insert(FileProbe {
+            file: shared.clone(),
+            length: metadata.len() as usize,
+        });
+        OpenedFile::Shared(shared)
+    } else {
+        file
+    };
+    if response.status() == StatusCode::NOT_MODIFIED
         && let Some((status, headers)) = original
         && let Some(representation) = response.extensions_mut().get_mut::<Representation>()
     {
@@ -841,7 +930,7 @@ fn file_response(
             let mut again = Response::new(Body::empty());
             *again.status_mut() = status;
             *again.headers_mut() = headers;
-            file_response(open, file, metadata, again, request, head, Some(weak))
+            file_response(open, file, metadata, again, request, Some(weak))
         }));
     }
     response
@@ -1243,26 +1332,77 @@ struct FileBody {
     remaining: u64,
     ready: Option<FirstChunk>,
     reading: Option<tokio::task::JoinHandle<std::io::Result<Bytes>>>,
+    http2: Option<Http2File>,
+}
+
+struct Http2File {
+    chunks: FileChunks,
+    wait: FileChunkWait,
+    whole: WholeFile,
+}
+
+enum ReadPermit {
+    Chunk { _slot: FileChunk },
+    Whole { _permit: Arc<BytePermit> },
+}
+
+impl Http2File {
+    fn poll_permit(&mut self, cx: &mut Context<'_>) -> Poll<ReadPermit> {
+        if let Some(permit) = self.whole.permit() {
+            return Poll::Ready(ReadPermit::Whole {
+                _permit: permit.clone(),
+            });
+        }
+        self.chunks
+            .poll_take(&mut self.wait, cx)
+            .map(|slot| ReadPermit::Chunk { _slot: slot })
+    }
 }
 
 impl FileBody {
+    fn attach(
+        response: &mut Response,
+        file: Arc<SharedFile>,
+        start: u64,
+        length: u64,
+        chunks: Option<FileChunks>,
+    ) {
+        let http2 = chunks.map(|chunks| {
+            let whole = WholeFile::default();
+            response.extensions_mut().insert(whole.clone());
+            Http2File {
+                chunks,
+                wait: None,
+                whole,
+            }
+        });
+        *response.body_mut() = Body::new(Self::start(file, start, length, http2));
+    }
+
     /// Called on the blocking thread that opened the file, which reads the
     /// first chunk too, so a small file is sent without another trip to the
-    /// blocking pool. Only while there is a place for it: the chunk is held
-    /// until the transport asks, which a stalled stream never does.
-    fn start(file: Arc<SharedFile>, start: u64, length: u64) -> Self {
+    /// blocking pool. If no place is available, the first poll reads it.
+    fn start(file: Arc<SharedFile>, start: u64, length: u64, http2: Option<Http2File>) -> Self {
         let want = chunk_len(length);
-        let mut ready = None;
-        if want > 0 && file.table.hold_first_chunk() {
-            // Dropped again, with its place, if nothing was read.
-            let first = FirstChunk {
+        let ready = if want == 0 {
+            None
+        } else if let Some(http2) = &http2 {
+            http2.chunks.try_take().map(|slot| FirstChunk {
+                bytes: ByteBudget::own_reserved(
+                    read_chunk(&file.file, start, want).unwrap_or_default(),
+                    slot,
+                ),
+                table: None,
+            })
+        } else if file.table.hold_first_chunk() {
+            Some(FirstChunk {
                 bytes: read_chunk(&file.file, start, want).unwrap_or_default(),
-                table: file.table.clone(),
-            };
-            if !first.bytes.is_empty() {
-                ready = Some(first);
-            }
-        }
+                table: Some(file.table.clone()),
+            })
+        } else {
+            None
+        };
+        let ready = ready.filter(|first| !first.bytes.is_empty());
         let offset = start + ready.as_ref().map_or(0, |first| first.bytes.len() as u64);
         Self {
             file,
@@ -1270,7 +1410,32 @@ impl FileBody {
             remaining: length,
             ready,
             reading: None,
+            http2,
         }
+    }
+
+    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>> {
+        if self.reading.is_none() {
+            let permit = match &mut self.http2 {
+                Some(http2) => Some(ready!(http2.poll_permit(cx))),
+                None => None,
+            };
+            let (file, offset, want) = (self.file.clone(), self.offset, chunk_len(self.remaining));
+            self.reading = Some(tokio::task::spawn_blocking(move || {
+                let data = read_chunk(&file.file, offset, want)?;
+                Ok(match permit {
+                    Some(permit) => ByteBudget::own_reserved(data, permit),
+                    None => data,
+                })
+            }));
+        }
+        let result = ready!(Pin::new(self.reading.as_mut().unwrap()).poll(cx));
+        self.reading = None;
+        Poll::Ready(
+            result
+                .map_err(std::io::Error::other)
+                .and_then(|value| value),
+        )
     }
 }
 
@@ -1287,25 +1452,16 @@ impl http_body::Body for FileBody {
             return Poll::Ready(None);
         }
         let chunk = match this.ready.take() {
-            // Its place is given up as it is handed over.
+            // HTTP/1 gives up the prefetch place here. HTTP/2 keeps a place
+            // on the Bytes itself until the transport no longer owns it.
             Some(mut first) => std::mem::take(&mut first.bytes),
-            None => {
-                let (file, offset, want) = (&this.file, this.offset, chunk_len(this.remaining));
-                let reading = this.reading.get_or_insert_with(|| {
-                    let file = file.clone();
-                    tokio::task::spawn_blocking(move || read_chunk(&file.file, offset, want))
-                });
-                let read = ready!(Pin::new(reading).poll(cx));
-                this.reading = None;
-                match read {
-                    Ok(Ok(chunk)) => {
-                        this.offset += chunk.len() as u64;
-                        chunk
-                    }
-                    Ok(Err(error)) => return Poll::Ready(Some(Err(error))),
-                    Err(error) => return Poll::Ready(Some(Err(std::io::Error::other(error)))),
+            None => match ready!(this.poll_read(cx)) {
+                Ok(chunk) => {
+                    this.offset += chunk.len() as u64;
+                    chunk
                 }
-            }
+                Err(error) => return Poll::Ready(Some(Err(error))),
+            },
         };
         if chunk.is_empty() {
             // The file shrank after its length was read; end with an error
@@ -1359,6 +1515,38 @@ mod tests {
     use super::*;
     use http_body_util::BodyExt;
 
+    #[tokio::test]
+    async fn whole_file_budget_allows_collecting_multiple_h2_chunks() {
+        use std::time::Duration;
+        use tokio::sync::Semaphore;
+
+        let root = scratch("buffered-h2-file");
+        let path = root.join("item");
+        let data = vec![b'x'; 3 * CHUNK + 1];
+        std::fs::write(&path, &data).unwrap();
+        let (file, metadata) = open_regular(&path).unwrap();
+        let shared = OpenFiles::new(1).share(file, &metadata).unwrap();
+        let connection = Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap();
+        let chunks = FileChunks::new(Arc::new(Semaphore::new(0)), Arc::new(connection));
+        let budget = ByteBudget::new(data.len());
+        let mut response = Response::new(Body::empty());
+        FileBody::attach(&mut response, shared, 0, data.len() as u64, Some(chunks));
+        let reservation = response
+            .extensions_mut()
+            .remove::<WholeFile>()
+            .unwrap()
+            .reserve(budget.acquire(data.len()).unwrap());
+        let collected = tokio::time::timeout(Duration::from_secs(3), collect(response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(collected, data);
+        assert_eq!(budget.available(), 0);
+        drop(reservation);
+        assert_eq!(budget.available(), data.len());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1378,7 +1566,9 @@ mod tests {
 
     async fn get(files: &Arc<StaticDir>, name: &str, headers: &HeaderMap) -> Response {
         let uri: Uri = format!("/{name}").parse().unwrap();
-        files.serve(name, &uri, headers, false).await
+        files
+            .serve(name, &uri, FileRequest::new(headers, false, None))
+            .await
     }
 
     async fn collect(response: Response) -> Result<Vec<u8>, axum::Error> {
@@ -1429,7 +1619,11 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         let head = files
-            .serve("c", &"/c".parse().unwrap(), &headers, true)
+            .serve(
+                "c",
+                &"/c".parse().unwrap(),
+                FileRequest::new(&headers, true, None),
+            )
             .await;
         assert_eq!(head.status(), StatusCode::OK);
         assert_eq!(
@@ -1483,7 +1677,13 @@ mod tests {
                 response
                     .headers_mut()
                     .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-                serve_response_file(file, metadata, response, &headers, false).await
+                serve_response_file(
+                    file,
+                    metadata,
+                    response,
+                    FileRequest::new(&headers, false, None),
+                )
+                .await
             }
         };
         for from_route in [false, true] {
@@ -1513,7 +1713,10 @@ mod tests {
             assert_eq!(representation.length, 6000);
             assert!(!representation.encoded);
             assert!(representation.reselect.is_some());
-            let identity = compression.complete(None, Some(&strong), identity).await;
+            let budget = ByteBudget::new(1024 * 1024);
+            let identity = compression
+                .complete(None, Some(&strong), identity, &budget)
+                .await;
             assert_eq!(identity.status(), StatusCode::NOT_MODIFIED);
             assert_eq!(identity.headers()[header::ETAG], strong);
             assert_eq!(identity.headers()[header::VARY], "Accept-Encoding");
@@ -1526,7 +1729,7 @@ mod tests {
             };
             assert_eq!(held.status(), StatusCode::NOT_MODIFIED);
             let again = compression
-                .complete(Some(Coding::Gzip), Some(&strong), held)
+                .complete(Some(Coding::Gzip), Some(&strong), held, &budget)
                 .await;
             assert_eq!(again.status(), StatusCode::OK, "{from_route}");
             assert!(
@@ -1608,8 +1811,7 @@ mod tests {
                 &open,
                 move || open_regular(&path),
                 Response::new(Body::empty()),
-                &headers,
-                head,
+                FileRequest::new(&headers, head, None),
             )
         };
         let mut held = Vec::new();

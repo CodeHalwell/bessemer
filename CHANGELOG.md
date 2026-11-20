@@ -9,6 +9,16 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Fixed
+
+- Static files and `FileResponse` now choose HEAD headers and conditional
+  validators using the result of compression for files that can be buffered.
+  When compression would enlarge the file, HEAD keeps the identity metadata
+  and a matching identity ETag returns `304`.
+- HTTP/2 file responses reserve space before reading each streamed chunk.
+  The reservation follows the bytes through transport, and a stream waits
+  for a chunk to be released when its allowance is full.
+
 ## [1.0.0rc8] - 2026-11-19
 
 ### Changed

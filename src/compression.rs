@@ -25,7 +25,10 @@
 //! request; a file's `304` or `206` says what that `200` is with a
 //! [`Representation`].
 
-use crate::budget::{ByteBudget, BytePermit, Unreserved};
+use crate::{
+    budget::{ByteBudget, BytePermit, Unreserved},
+    static_files::FileProbe,
+};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -83,6 +86,26 @@ pub(crate) struct Compression {
     gzip: bool,
     br: bool,
     min_size: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct FilePreview {
+    min_size: u64,
+}
+
+impl FilePreview {
+    pub(crate) fn needs_probe(self, response: &Response, length: u64, head: bool) -> bool {
+        if !(self.min_size..=BUFFER_LIMIT).contains(&length) {
+            return false;
+        }
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return response
+                .extensions()
+                .get::<Representation>()
+                .is_some_and(|representation| representation.compressible(response.headers()));
+        }
+        head && compressible(response)
+    }
 }
 
 impl Compression {
@@ -159,19 +182,28 @@ impl Compression {
         }
     }
 
-    /// Whether the `200` for `representation` would be compressed for a
-    /// client that negotiated `coding`. A buffered body is sent compressed
-    /// only when that saves bytes, which a response without its body cannot
-    /// tell; text of `min_size` or more is taken to compress.
-    fn encodes(
+    pub(crate) fn file_preview(&self, coding: Option<Coding>) -> Option<FilePreview> {
+        coding.map(|_| FilePreview {
+            min_size: self.min_size.max(1),
+        })
+    }
+
+    async fn file_validator_is_weak(
         &self,
         coding: Option<Coding>,
         representation: &Representation,
-        headers: &HeaderMap,
-    ) -> bool {
-        coding.is_some()
-            && representation.compressible(headers)
-            && representation.length >= self.min_size.max(1)
+        response: &mut Response,
+        budget: &ByteBudget,
+    ) -> Result<bool, FilePreviewError> {
+        let Some(coding) = coding else {
+            return Ok(false);
+        };
+        if !representation.compressible(response.headers())
+            || representation.length < self.min_size.max(1)
+        {
+            return Ok(false);
+        }
+        probe_file(coding, response, budget).await
     }
 
     /// Give a file's `304` or `206` the `Vary` and `ETag` its `200` would
@@ -190,39 +222,52 @@ impl Compression {
         coding: Option<Coding>,
         if_none_match: Option<&HeaderValue>,
         mut response: Response,
+        budget: &ByteBudget,
     ) -> Response {
         let Some(mut representation) = response.extensions_mut().remove::<Representation>() else {
             return response;
         };
+        let mut weak = false;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            weak = match self
+                .file_validator_is_weak(coding, &representation, &mut response, budget)
+                .await
+            {
+                Ok(weak) => weak,
+                Err(error) => return error.response(),
+            };
+        }
         if let Some(reselect) = representation.reselect.take()
             && response.status() == StatusCode::NOT_MODIFIED
+            && !lists_sent_tag(if_none_match, response.headers().get(header::ETAG), weak)
         {
-            let weak = self.encodes(coding, &representation, response.headers());
-            if !lists_sent_tag(if_none_match, response.headers().get(header::ETAG), weak) {
-                let Some(again) = reselect.run(weak).await else {
-                    return crate::error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Internal Server Error",
-                    );
+            let Some(again) = reselect.run(weak).await else {
+                return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error");
+            };
+            // Preserve extensions owned by the original request.
+            let (parts, body) = again.into_parts();
+            *response.status_mut() = parts.status;
+            *response.headers_mut() = parts.headers;
+            *response.body_mut() = body;
+            response.extensions_mut().extend(parts.extensions);
+            match response.extensions_mut().remove::<Representation>() {
+                Some(selected) => representation = selected,
+                None => return response,
+            }
+            if response.status() == StatusCode::NOT_MODIFIED {
+                weak = match self
+                    .file_validator_is_weak(coding, &representation, &mut response, budget)
+                    .await
+                {
+                    Ok(weak) => weak,
+                    Err(error) => return error.response(),
                 };
-                // The new selection replaces the response; what else the
-                // response carries (its admission, say) stays with it.
-                let (parts, body) = again.into_parts();
-                *response.status_mut() = parts.status;
-                *response.headers_mut() = parts.headers;
-                *response.body_mut() = body;
-                response.extensions_mut().extend(parts.extensions);
-                match response.extensions_mut().remove::<Representation>() {
-                    Some(selected) => representation = selected,
-                    None => return response,
-                }
             }
         }
         let status = response.status();
         if status != StatusCode::NOT_MODIFIED && status != StatusCode::PARTIAL_CONTENT {
             return response;
         }
-        let weak = self.encodes(coding, &representation, response.headers());
         let headers = response.headers_mut();
         if !representation.compressible(headers) {
             return response;
@@ -233,6 +278,21 @@ impl Compression {
             weaken_etag(headers);
         }
         response
+    }
+
+    pub(crate) async fn prepare_file_head(
+        &self,
+        coding: Coding,
+        mut response: Response,
+        budget: &ByteBudget,
+    ) -> (Response, bool) {
+        match probe_file(coding, &mut response, budget).await {
+            Ok(encoded) => {
+                let omit = self.prepare_head(encoded.then_some(coding), &mut response);
+                (response, omit)
+            }
+            Err(error) => (error.response(), false),
+        }
     }
 
     /// Give a `HEAD` the headers of the `GET` it stands for: `Vary` when that
@@ -536,6 +596,56 @@ fn timed_out() -> Response {
     crate::error(StatusCode::GATEWAY_TIMEOUT, "Request timed out")
 }
 
+enum FilePreviewError {
+    Read,
+    Timeout,
+}
+
+impl FilePreviewError {
+    fn response(self) -> Response {
+        match self {
+            Self::Read => crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Response body failed"),
+            Self::Timeout => timed_out(),
+        }
+    }
+}
+
+async fn probe_file(
+    coding: Coding,
+    response: &mut Response,
+    budget: &ByteBudget,
+) -> Result<bool, FilePreviewError> {
+    let Some(probe) = response.extensions_mut().remove::<FileProbe>() else {
+        return Ok(true);
+    };
+    // A file that cannot be buffered is compressed as a stream.
+    let Ok(permit) = budget.acquire(probe.length()) else {
+        return Ok(true);
+    };
+    let task = off_runtime(move || {
+        let _permit = permit;
+        let input = probe.read()?;
+        let encoded = compress_all(coding, &input);
+        Ok::<_, std::io::Error>(encoded.len() < input.len())
+    });
+    let deadline = response
+        .extensions()
+        .get::<crate::ProcessingDeadline>()
+        .map(|deadline| deadline.0);
+    let joined = match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, task)
+            .await
+            .map_err(|_| FilePreviewError::Timeout)?,
+        None => task.await,
+    };
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(FilePreviewError::Timeout);
+    }
+    joined
+        .map_err(|_| FilePreviewError::Read)?
+        .map_err(|_| FilePreviewError::Read)
+}
+
 /// Compress a body of known size whole. `reserved` is the budget taken for a
 /// body that had none of its own; it stays with the bytes read, and so with
 /// whichever of them or their compressed form is sent.
@@ -546,6 +656,13 @@ async fn buffered(coding: Coding, response: Response, reserved: Option<BytePermi
         .map(|deadline| deadline.0);
     let expired = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
     let (mut parts, body) = response.into_parts();
+    let whole = reserved
+        .as_ref()
+        .and_then(|_| parts.extensions.remove::<crate::budget::WholeFile>());
+    let (reserved, shared) = match (reserved, whole) {
+        (Some(permit), Some(file)) => (None, Some(file.reserve(permit))),
+        (reserved, _) => (reserved, None),
+    };
     let original = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         // A failed body (a file read error, say) must not become a complete,
@@ -554,9 +671,10 @@ async fn buffered(coding: Coding, response: Response, reserved: Option<BytePermi
             return crate::error(StatusCode::INTERNAL_SERVER_ERROR, "Response body failed");
         }
     };
-    let original = match reserved {
-        Some(reserved) => ByteBudget::own_reserved(original, reserved),
-        None => original,
+    let original = match (reserved, shared) {
+        (Some(reserved), _) => ByteBudget::own_reserved(original, reserved),
+        (_, Some(shared)) => ByteBudget::own_reserved(original, shared),
+        _ => original,
     };
     let compressed = if original.len() >= OFFLOAD_MIN {
         let input = original.clone();
@@ -1433,7 +1551,7 @@ mod tests {
         for (content_type, length, encoded, headers, coding, etag, vary) in cases {
             for status in [StatusCode::NOT_MODIFIED, StatusCode::PARTIAL_CONTENT] {
                 let response = of_file(status, content_type, length, encoded, headers);
-                let response = compression.complete(coding, None, response).await;
+                let response = compression.complete(coding, None, response, &roomy()).await;
                 let case = format!("{status} {content_type} {length} {encoded} {coding:?}");
                 // A range is of the identity representation: its strong tag.
                 let etag = if status == StatusCode::PARTIAL_CONTENT {
@@ -1455,7 +1573,7 @@ mod tests {
         let own = revalidation(StatusCode::NOT_MODIFIED, "\"v1\"", &[]);
         let weak = HeaderValue::from_static("W/\"v1\"");
         let own = compression
-            .complete(Some(Coding::Gzip), Some(&weak), own)
+            .complete(Some(Coding::Gzip), Some(&weak), own, &roomy())
             .await;
         let own = compression.apply(Some(Coding::Gzip), own, &roomy()).await;
         assert_eq!(own.headers()[header::ETAG], "\"v1\"");
@@ -1504,7 +1622,7 @@ mod tests {
             asked.lock().unwrap().clear();
             let value = HeaderValue::from_static(if_none_match);
             let response = compression
-                .complete(coding, Some(&value), not_modified(&asked))
+                .complete(coding, Some(&value), not_modified(&asked), &roomy())
                 .await;
             let case = format!("{coding:?} {if_none_match}");
             assert_eq!(*asked.lock().unwrap(), Vec::from_iter(again), "{case}");

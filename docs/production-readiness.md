@@ -39,6 +39,60 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 20 November 2026: RC8 file response fixes
+
+- For buffered static files and `FileResponse`, HEAD and conditional replies
+  use the actual gzip or Brotli result to choose the encoding and validators.
+  The preview reads the open file under a whole-file response byte permit and
+  uses the existing bounded compression pool. If the whole file cannot be
+  reserved, the headers follow the same streamed compression policy as GET.
+- HTTP/2 file reads take a 64 KiB chunk slot before allocating their buffer.
+  Each connection has two slots and the worker shares `max_connections`
+  additional slots. A read and the transport's last retained slice both keep
+  the slot alive. The worker therefore holds at most
+  `3 × max_connections × 64 KiB` of raw streamed file buffers. Whole-file
+  compression uses its existing response byte budget. General streaming
+  response accounting remains a separate follow-up.
+
+The new compression regression test failed all eight combinations on the
+RC8 baseline and passed on the candidate. It covers static mounts and
+`FileResponse`, gzip and Brotli, and files small enough to compress inline
+or large enough to use the blocking pool. Rust tests verify permit lifetime
+through the last byte slice and whole-file collection across multiple
+chunks. Installed-wheel HTTP/2 tests deliver the complete file with
+identity, buffered gzip and streamed gzip.
+
+On Apple Silicon, `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` passed with
+the candidate wheel on CPython 3.13.18. Rust passed 411 tests (two ignored).
+The installed Python suite ran 1,290 tests (26 skipped), and the benchmark
+harness suite ran 83 tests (four skipped). The CPython 3.14.7t candidate
+passed 32 focused tests with the GIL disabled.
+
+The Apple Silicon loopback benchmark compared a rebuild of RC8
+(`4a0f104`) with the candidate. Both wheels used Rust 1.98.0 and
+CPython 3.13.18. One worker served IPv6 loopback. Each workload ran
+three alternating pairs with 500 ms warmup, two seconds of measured
+traffic and a drain. All 42 measured samples qualified and returned
+401,882 correct replies with zero transport, status or byte-count errors.
+Preflight checks verified the protocol, complete file bytes and the
+compression validators.
+
+| Workload | Candidate/RC8 throughput (paired median and range) | Candidate/RC8 CPU per reply (paired median) |
+| --- | ---: | ---: |
+| HTTP/1.1 static 1 MiB, 2 connections | 0.988× (0.697–1.146) | 1.011× |
+| HTTP/2 static 1 MiB, 1 connection and 1 stream | 1.039× (0.769–1.160) | 1.001× |
+| HTTP/2 static 1 MiB, 2 connections and 4 streams each | 1.025× (0.962–1.067) | 0.989× |
+| HTTP/2 `FileResponse` 1 MiB, 2 connections and 4 streams each | 0.951× (0.751–0.965) | 1.111× |
+| Tiny file GET, gzip requested, 4 connections | 0.966× (0.847–1.037) | 1.020× |
+| Gzip HEAD for 19 KiB file, 4 connections | 0.765× (0.734–0.978) | 1.290× |
+| Gzip revalidation for 19 KiB file, 4 connections | 0.924× (0.495–0.985) | 1.264× |
+
+The HEAD and revalidation paths now perform the compression check. The
+HTTP/2 `FileResponse` case had higher CPU per reply and its median p99
+rose from 13.8 to 16.5 ms. In the separate GIL-held handler control,
+the worst native health response was 2.43–4.62 ms on RC8 and
+1.91–4.14 ms on the candidate across three trials each.
+
 ## 19 November 2026: the review's remaining findings
 
 The findings the review left after its six blockers were fixed in the same
@@ -58,7 +112,7 @@ finished. Each was found by an independent review or the pull request's
 reviewer bot and reproduced; the reproductions were run against wheels
 built here and are described closely enough to rebuild.
 
-Regressions this branch introduced and has not yet repaired:
+Regressions present in RC8 and addressed by the 20 November changes:
 
 1. **File chunks held by stalled HTTP/2 streams.** Since file bodies share
    one descriptor per file, nothing bounds how many exist, and they are

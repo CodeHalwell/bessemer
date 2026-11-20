@@ -542,7 +542,9 @@ impl Dispatcher {
                             params,
                             &info,
                             request,
-                            coding.is_some() && method != Method::HEAD,
+                            self.controls
+                                .compression()
+                                .and_then(|compression| compression.file_preview(coding)),
                             // Only a plain response may skip the controls'
                             // map: they add nothing to its headers.
                             direct
@@ -582,11 +584,32 @@ impl Dispatcher {
                 .get::<crate::compression::Representation>()
                 .is_some()
             {
-                response =
-                    Box::pin(compression.complete(coding, if_none_match.as_ref(), response)).await;
+                response = Box::pin(compression.complete(
+                    coding,
+                    if_none_match.as_ref(),
+                    response,
+                    &self.state.response_bytes,
+                ))
+                .await;
             }
             if method == Method::HEAD {
-                compression.prepare_head(coding, &mut response)
+                if let Some(coding) = coding
+                    && response
+                        .extensions()
+                        .get::<crate::static_files::FileProbe>()
+                        .is_some()
+                {
+                    let (completed, omit) = Box::pin(compression.prepare_file_head(
+                        coding,
+                        response,
+                        &self.state.response_bytes,
+                    ))
+                    .await;
+                    response = completed;
+                    omit
+                } else {
+                    compression.prepare_head(coding, &mut response)
+                }
             } else {
                 response =
                     Box::pin(compression.apply(coding, response, &self.state.response_bytes)).await;
@@ -1034,7 +1057,7 @@ mod tests {
             Ok(PathValues::default()),
             &info,
             &mut second,
-            false,
+            None,
             None,
         );
         let checked = crate::transport::ProtocolChecked {

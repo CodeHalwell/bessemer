@@ -12,8 +12,9 @@ import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
-from bessemer import App, Compression, PlainTextResponse, Request
+from bessemer import App, Compression, FileResponse, PlainTextResponse, Request
 from bessemer.config import settings
 from bessemer.responses import JSONResponse
 from bessemer.testclient import TestClient
@@ -402,6 +403,51 @@ class HTTP2Tests(unittest.TestCase):
             self.assertEqual(body["scheme"], "http")
             # HTTP/1.1 clients share the port.
             self.assertEqual(client.get("/where").json()["scheme"], "http")
+
+    @unittest.skipUnless(curl_speaks_http2(), "requires curl with HTTP/2")
+    def test_files_transfer_over_http2_with_buffered_and_streamed_compression(self):
+        data = b"HTTP/2 file content\n" * 20_000
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "content.txt"
+            path.write_bytes(data)
+            app = App(compression=Compression(br=False))
+            app.static("/static", directory)
+
+            @app.get("/download")
+            async def download():
+                return FileResponse(path, media_type="text/plain")
+
+            for budget in (1024, len(data)):
+                options = {
+                    "max_connections": 2,
+                    "max_response_size": 1024,
+                    "max_response_bytes_in_flight": budget,
+                }
+                with TestClient(app, server_options=options) as client:
+                    for route in ("/static/content.txt", "/download"):
+                        for coding in ("identity", "gzip"):
+                            with self.subTest(
+                                budget=budget, route=route, coding=coding
+                            ):
+                                response = subprocess.run(
+                                    [
+                                        "curl",
+                                        "--silent",
+                                        "--show-error",
+                                        "--fail",
+                                        "--http2-prior-knowledge",
+                                        "--compressed",
+                                        "-H",
+                                        f"Accept-Encoding: {coding}",
+                                        "-w",
+                                        "\n%{http_version}",
+                                        f"http://127.0.0.1:{client._port}{route}",
+                                    ],
+                                    capture_output=True,
+                                    timeout=10,
+                                    check=True,
+                                )
+                                self.assertEqual(response.stdout, data + b"\n2")
 
     @unittest.skipUnless(curl_speaks_http2(), "requires curl with HTTP/2")
     def test_head_length_with_compression_over_http2(self):

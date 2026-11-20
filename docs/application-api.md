@@ -1369,6 +1369,12 @@ writes or drops the bytes. Concurrent native OpenAPI/docs responses each consume
 their full payload length, even though their startup data is shared. Small
 native health/error responses are exempt; metrics uses its separate 4 MiB,
 single-scrape guard.
+HTTP/2 file streams have two 64 KiB read slots per connection and share a
+worker pool of `max_connections` more slots. A slot remains occupied from
+before the read until the transport releases its last slice. A stream
+waits when its slots and the shared pool are full. Whole-file compression
+reserves the input size in `max_response_bytes_in_flight` when it buffers
+the file. The chunk pool covers files sent without that whole-file reservation.
 Metrics duration and the in-flight gauge stop at response readiness and exclude
 socket drain. Response byte reservations can remain occupied during that drain,
 after the metrics in-flight gauge has decreased.

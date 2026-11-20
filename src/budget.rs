@@ -2,11 +2,11 @@
 
 use axum::body::{Body, Bytes};
 use http_body::Body as _;
-use std::future::poll_fn;
+use std::future::{Future, poll_fn};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::Poll;
+use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone)]
@@ -62,9 +62,10 @@ impl ByteBudget {
 
 impl ByteBudget {
     /// Like `own`, for data whose bytes were reserved already by `acquire`.
-    pub(crate) fn own_reserved<T>(data: T, permit: BytePermit) -> Bytes
+    pub(crate) fn own_reserved<T, P>(data: T, permit: P) -> Bytes
     where
         T: AsRef<[u8]> + Send + 'static,
+        P: Send + 'static,
     {
         Bytes::from_owner(Payload {
             data,
@@ -135,14 +136,153 @@ impl BytePermit {
     }
 }
 
-struct Payload<T> {
+struct Payload<T, P> {
     data: T,
-    _permit: BytePermit,
+    _permit: P,
 }
 
-impl<T: AsRef<[u8]>> AsRef<[u8]> for Payload<T> {
+impl<T: AsRef<[u8]>, P> AsRef<[u8]> for Payload<T, P> {
     fn as_ref(&self) -> &[u8] {
         self.data.as_ref()
+    }
+}
+
+/// Two chunks per HTTP/2 connection, then one worker-wide pool sized by
+/// max_connections. One connection cannot take another's local allowance.
+#[derive(Clone)]
+pub(crate) struct FileChunks(Arc<FileChunkPools>);
+
+struct FileChunkPools {
+    local: Arc<Semaphore>,
+    shared: Arc<Semaphore>,
+    _connection: Arc<OwnedSemaphorePermit>,
+}
+
+/// Keeps the connection admitted even if a read is finishing after disconnect.
+pub(crate) struct FileChunk {
+    _slot: OwnedSemaphorePermit,
+    _pools: FileChunks,
+}
+
+pub(crate) type FileChunkWait = Option<Pin<Box<dyn Future<Output = FileChunk> + Send>>>;
+
+impl FileChunks {
+    pub(crate) fn new(shared: Arc<Semaphore>, connection: Arc<OwnedSemaphorePermit>) -> Self {
+        Self(Arc::new(FileChunkPools {
+            local: Arc::new(Semaphore::new(2)),
+            shared,
+            _connection: connection,
+        }))
+    }
+
+    pub(crate) fn try_take(&self) -> Option<FileChunk> {
+        let slot = self
+            .0
+            .local
+            .clone()
+            .try_acquire_owned()
+            .or_else(|_| self.0.shared.clone().try_acquire_owned())
+            .ok()?;
+        Some(self.hold(slot))
+    }
+
+    fn hold(&self, slot: OwnedSemaphorePermit) -> FileChunk {
+        FileChunk {
+            _slot: slot,
+            _pools: self.clone(),
+        }
+    }
+
+    pub(crate) fn poll_take(
+        &self,
+        wait: &mut FileChunkWait,
+        cx: &mut Context<'_>,
+    ) -> Poll<FileChunk> {
+        if wait.is_none() {
+            if let Some(chunk) = self.try_take() {
+                return Poll::Ready(chunk);
+            }
+            let pools = self.clone();
+            *wait = Some(Box::pin(async move {
+                let slot = tokio::select! {
+                    biased;
+                    slot = pools.0.local.clone().acquire_owned() => slot,
+                    slot = pools.0.shared.clone().acquire_owned() => slot,
+                };
+                pools.hold(slot.expect("file chunk pools are never closed"))
+            }));
+        }
+        let result = wait.as_mut().unwrap().as_mut().poll(cx);
+        if result.is_ready() {
+            *wait = None;
+        }
+        result
+    }
+}
+
+/// Whole-file compression may retain all input frames at once. Give its
+/// already-budgeted file a shared permit before polling any of those frames.
+#[derive(Clone, Default)]
+pub(crate) struct WholeFile(Arc<OnceLock<Arc<BytePermit>>>);
+
+impl WholeFile {
+    pub(crate) fn reserve(&self, permit: BytePermit) -> Arc<BytePermit> {
+        let permit = Arc::new(permit);
+        assert!(self.0.set(permit.clone()).is_ok());
+        permit
+    }
+
+    pub(crate) fn permit(&self) -> Option<&Arc<BytePermit>> {
+        self.0.get()
+    }
+}
+
+#[cfg(test)]
+mod file_chunk_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn chunk_owner_keeps_capacity_until_last_slice_is_dropped() {
+        let connections = Arc::new(Semaphore::new(2));
+        let shared = Arc::new(Semaphore::new(1));
+        let file_chunks = || {
+            let admitted = connections.clone().try_acquire_owned().unwrap();
+            FileChunks::new(shared.clone(), Arc::new(admitted))
+        };
+        let first = file_chunks();
+        let second = file_chunks();
+        let two_local = (first.try_take().unwrap(), first.try_take().unwrap());
+        let overflow = first.try_take().unwrap();
+        let other = second.try_take().unwrap();
+        assert!(first.try_take().is_none());
+
+        let body = ByteBudget::own_reserved(Bytes::from_static(b"file chunk"), overflow);
+        let slice = body.slice(..4);
+        drop(body);
+        let mut waiting = None;
+        let waker = std::task::Waker::noop();
+        assert!(
+            first
+                .poll_take(&mut waiting, &mut Context::from_waker(waker))
+                .is_pending()
+        );
+
+        drop(slice);
+        let resumed = tokio::time::timeout(
+            Duration::from_secs(1),
+            poll_fn(|cx| first.poll_take(&mut waiting, cx)),
+        )
+        .await
+        .unwrap();
+        drop(first);
+        drop(two_local);
+        assert_eq!(connections.available_permits(), 0);
+        drop(resumed);
+        assert_eq!(connections.available_permits(), 1);
+        drop(other);
+        drop(second);
+        assert_eq!(connections.available_permits(), 2);
     }
 }
 
