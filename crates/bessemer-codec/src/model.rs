@@ -68,7 +68,7 @@ struct Field {
     key_prefix: Option<Box<[u8]>>,
     /// The same key, interned, for O(1) dict lookups on the response side.
     key_py: Py<PyString>,
-    /// Pre-escaped `"key":` prefix for JSON output, in declaration order.
+    /// Pre-escaped JSON key and colon, with a leading comma for later fields.
     prefix: Vec<u8>,
     /// An immutable default, used when the key is absent.
     default: Option<Default>,
@@ -329,7 +329,11 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 });
                 let output_key: String = field.get_item(2)?.extract()?;
                 let has_default: bool = field.get_item(4)?.extract()?;
-                let mut prefix = Vec::with_capacity(output_key.len() + 3);
+                let separator = usize::from(!fields.is_empty());
+                let mut prefix = Vec::with_capacity(output_key.len() + 3 + separator);
+                if separator != 0 {
+                    prefix.push(b',');
+                }
                 write_escaped(&mut prefix, output_key.as_bytes(), usize::MAX)
                     .map_err(|_| PyValueError::new_err("model plan key is too large"))?;
                 prefix.push(b':');
@@ -878,6 +882,17 @@ type Stack<'py> = Vec<Option<Bound<'py, PyAny>>>;
 const INLINE_FIELDS: usize = 8;
 
 impl Parser<'_, Scan> {
+    #[inline]
+    fn next_non_whitespace(&mut self) -> Result<u8, ParseError> {
+        loop {
+            match self.peek().ok_or(ParseError)? {
+                b' ' | b'\n' | b'\t' | b'\r' => self.position += 1,
+                next => return Ok(next),
+            }
+        }
+    }
+
+    #[inline]
     fn typed<'py>(
         &mut self,
         py: Python<'py>,
@@ -885,19 +900,29 @@ impl Parser<'_, Scan> {
         depth: usize,
         stack: &mut Stack<'py>,
     ) -> Typed<'py> {
+        let next = self.next_non_whitespace()?;
+        self.typed_value(py, node, depth, stack, next)
+    }
+
+    fn typed_value<'py>(
+        &mut self,
+        py: Python<'py>,
+        node: &Node,
+        depth: usize,
+        stack: &mut Stack<'py>,
+        next: u8,
+    ) -> Typed<'py> {
         // The same limit as `value`, so a body the typed parse accepts is
         // one the scanner accepts.
         if depth > MAX_DEPTH {
             return Err(ParseError);
         }
-        self.skip_whitespace();
-        let next = self.peek().ok_or(ParseError)?;
         Ok(Some(match (node, next) {
             (Node::Nullable(_), b'n') => {
                 self.literal(b"null")?;
                 py.None().into_bound(py)
             }
-            (Node::Nullable(inner), _) => return self.typed(py, inner, depth, stack),
+            (Node::Nullable(inner), _) => return self.typed_value(py, inner, depth, stack, next),
             (Node::Int, b'-' | b'0'..=b'9') => match self.number()? {
                 Leaf::Int(value) => PyInt::new(py, value).into_any(),
                 Leaf::UInt(value) => PyInt::new(py, value).into_any(),
@@ -915,16 +940,31 @@ impl Parser<'_, Scan> {
             }
             (Node::Str, b'"') => {
                 self.position += 1;
-                let text = match self.string()? {
-                    Text::Input(start, end) => &self.input[start..end],
-                    Text::Scratch => &self.scratch[..],
+                let location = self.string()?;
+                let value = match location {
+                    Text::Ascii(start, end) => {
+                        // SAFETY: `string` checked that the run is ASCII.
+                        unsafe { super::new_ascii_str(&self.input[start..end]) }
+                    }
+                    Text::Input(start, end) => {
+                        let text = &self.input[start..end];
+                        // SAFETY: `string` checked that the run is UTF-8.
+                        unsafe {
+                            ffi::PyUnicode_FromStringAndSize(
+                                text.as_ptr().cast(),
+                                text.len() as ffi::Py_ssize_t,
+                            )
+                        }
+                    }
+                    Text::Scratch => {
+                        // SAFETY: `string` validated the unescaped scratch.
+                        let text = unsafe { std::str::from_utf8_unchecked(&self.scratch) };
+                        super::new_str(text)
+                    }
                 };
-                // SAFETY: `string` validated these bytes as UTF-8.
-                let text = unsafe { std::str::from_utf8_unchecked(text) };
-                // SAFETY: `new_str` returns a new reference or null with an
-                // exception set.
-                unsafe { Bound::from_owned_ptr_or_err(py, super::new_str(text)) }
-                    .map_err(|_| ParseError)?
+                // SAFETY: each constructor returns a new reference or null
+                // with an exception set.
+                unsafe { Bound::from_owned_ptr_or_err(py, value) }.map_err(|_| ParseError)?
             }
             (Node::Bool, b't') => {
                 self.literal(b"true")?;
@@ -948,21 +988,23 @@ impl Parser<'_, Scan> {
         stack: &mut Stack<'py>,
     ) -> Typed<'py> {
         self.position += 1;
-        self.skip_whitespace();
-        if self.peek() == Some(b']') {
+        let mut next = self.next_non_whitespace()?;
+        if next == b']' {
             self.position += 1;
             return Ok(Some(PyList::empty(py).into_any()));
         }
         let base = stack.len();
         loop {
-            match self.typed(py, inner, depth + 1, stack)? {
+            match self.typed_value(py, inner, depth + 1, stack, next)? {
                 Some(item) => stack.push(Some(item)),
                 None => return Ok(None),
             }
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => self.position += 1,
-                Some(b']') => {
+            match self.next_non_whitespace()? {
+                b',' => {
+                    self.position += 1;
+                    next = self.next_non_whitespace()?;
+                }
+                b']' => {
                     self.position += 1;
                     break;
                 }
@@ -1323,9 +1365,8 @@ impl Encoder<'_, '_> {
                 let mut in_order = [std::ptr::null_mut(); ORDERED_FIELDS];
                 if fields_in_order(values, body, &mut in_order) {
                     self.out.push(b'{');
-                    for (position, (field, &item)) in body.fields.iter().zip(&in_order).enumerate()
-                    {
-                        self.field(position, field, item, depth)?;
+                    for (field, &item) in body.fields.iter().zip(&in_order) {
+                        self.field(field, item, depth)?;
                     }
                     self.out.push(b'}');
                     return self.check();
@@ -1354,7 +1395,7 @@ impl Encoder<'_, '_> {
             self.out.push(b'{');
             for (position, field) in body.fields.iter().enumerate() {
                 let item = self.entries[base + position];
-                self.field(position, field, item, depth)?;
+                self.field(field, item, depth)?;
             }
             self.entries.truncate(base);
             self.out.push(b'}');
@@ -1362,26 +1403,21 @@ impl Encoder<'_, '_> {
         }
     }
 
-    /// Write field `position` of a model: its separator, its `"key":` prefix
-    /// and `item` as its value.
+    /// Write the compiled field prefix and `item` as its value.
     #[inline]
     unsafe fn field(
         &mut self,
-        position: usize,
         field: &Field,
         item: *mut ffi::PyObject,
         depth: usize,
     ) -> Result<(), Bail> {
-        self.field_prefix(position, field)?;
+        self.field_prefix(field)?;
         // SAFETY: the caller's; `item` is a value it read for this field.
         unsafe { self.node(item, &field.node, depth + 1) }
     }
 
     #[inline]
-    fn field_prefix(&mut self, position: usize, field: &Field) -> Result<(), Bail> {
-        if position > 0 {
-            self.out.push(b',');
-        }
+    fn field_prefix(&mut self, field: &Field) -> Result<(), Bail> {
         // Check before copying: a fixed escaped alias can be much larger than
         // the remaining response budget.
         if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
@@ -1413,32 +1449,34 @@ impl Encoder<'_, '_> {
             let write_scalars = body.fields.len() <= ORDERED_FIELDS && depth < MAX_DEPTH;
             self.out.push(b'{');
             let next = self.locked(values, |this| {
+                if ffi::PyDict_Size(values) as usize != body.fields.len() {
+                    return Ok(None);
+                }
                 let mut position: ffi::Py_ssize_t = 0;
                 let mut key: *mut ffi::PyObject = std::ptr::null_mut();
                 let mut item: *mut ffi::PyObject = std::ptr::null_mut();
-                let mut index = 0;
-                let mut first_held = None;
-                while ffi::PyDict_Next(values, &mut position, &mut key, &mut item) != 0 {
-                    let Some(field) = body.fields.get(index).filter(|field| name(field) == key)
-                    else {
-                        return Ok(None);
-                    };
-                    if !write_scalars
-                        || first_held.is_some()
-                        || field.prefix.len() > LOCKED_SCALAR_BYTES
-                        || !this.write_locked_scalar(item, &field.node, |this| {
-                            this.field_prefix(index, field)
-                        })?
+                let mut first_held = body.fields.len();
+                for (index, field) in body.fields.iter().enumerate() {
+                    if ffi::PyDict_Next(values, &mut position, &mut key, &mut item) == 0
+                        || name(field) != key
                     {
-                        if first_held.is_none() {
-                            first_held = Some(index);
-                            this.held.reserve(body.fields.len() - index);
-                        }
-                        this.hold(item);
+                        return Ok(None);
                     }
-                    index += 1;
+                    if first_held == body.fields.len() {
+                        if write_scalars
+                            && field.prefix.len() <= LOCKED_SCALAR_BYTES
+                            && this.write_locked_scalar(item, &field.node, |this| {
+                                this.field_prefix(field)
+                            })?
+                        {
+                            continue;
+                        }
+                        first_held = index;
+                        this.held.reserve(body.fields.len() - index);
+                    }
+                    this.hold(item);
                 }
-                Ok((index == body.fields.len()).then_some(first_held.unwrap_or(index)))
+                Ok(Some(first_held))
             })?;
             let Some(next) = next else {
                 self.out.truncate(output_start);
@@ -1446,7 +1484,7 @@ impl Encoder<'_, '_> {
             };
             for (offset, field) in body.fields[next..].iter().enumerate() {
                 let item = self.held[start + offset];
-                self.field_prefix(next + offset, field)?;
+                self.field_prefix(field)?;
                 write(self, item, &field.node, depth + 1)?;
             }
             self.out.push(b'}');
@@ -1508,7 +1546,15 @@ impl Encoder<'_, '_> {
                     if length + 2 > self.max_bytes.saturating_sub(self.out.len()) {
                         return Err(Bail);
                     }
-                    write_escaped(self.out, bytes, self.max_bytes)?;
+                    // Copy a one-byte string and its quotes together when
+                    // the byte needs no escaping.
+                    if let [byte] = bytes
+                        && super::ESCAPE[*byte as usize] == 0
+                    {
+                        self.out.extend_from_slice(&[b'"', *byte, b'"']);
+                    } else {
+                        write_escaped(self.out, bytes, self.max_bytes)?;
+                    }
                 }
                 Node::Bool if object == ffi::Py_True() || object == ffi::Py_False() => {
                     prefix(self)?;
@@ -1795,9 +1841,6 @@ impl Encoder<'_, '_> {
             let in_order = self.scan_model_dict(object, body)?;
             self.out.push(b'{');
             for (index, field) in body.fields.iter().enumerate() {
-                if index > 0 {
-                    self.out.push(b',');
-                }
                 self.write_model_dict_field(object, field, in_order.as_ref(), index, depth)?;
             }
             self.out.push(b'}');
@@ -1825,14 +1868,14 @@ impl Encoder<'_, '_> {
             let mut position: ffi::Py_ssize_t = 0;
             let mut key = std::ptr::null_mut();
             let mut item = std::ptr::null_mut();
-            for (index, field) in body.fields.iter().enumerate() {
+            for field in &body.fields {
                 if ffi::PyDict_Next(object, &mut position, &mut key, &mut item) == 0
                     || field.key_py.as_ptr() != key
                 {
                     self.out.truncate(output_start);
                     return Ok(false);
                 }
-                self.field_prefix(index, field)?;
+                self.field_prefix(field)?;
                 self.dict_value(item, &field.node, depth + 1)?;
             }
             self.out.push(b'}');
@@ -1889,10 +1932,7 @@ impl Encoder<'_, '_> {
         depth: usize,
     ) -> Result<(), Bail> {
         unsafe {
-            if field.prefix.len() > self.max_bytes.saturating_sub(self.out.len()) {
-                return Err(Bail);
-            }
-            self.out.extend_from_slice(&field.prefix);
+            self.field_prefix(field)?;
             // Exact string keys cannot run Python comparison code; the GIL
             // keeps borrowed values alive, and no-GIL uses a private snapshot.
             #[cfg(not(Py_GIL_DISABLED))]
@@ -2335,6 +2375,8 @@ spec = ('list', ('model', Record, False,
          ('tags', 'tags', 'tags', ('list', ('str',)), False, None))))
 values = [
     {'id': -1, 'tags': ['a\x00b', 'x"\\y']},
+    {'id': 0, 'tags': ['a', 'b', '', '\0', '"', '\\']},
+    {'id': 1, 'tags': ['\u00e9']},
     {'id': -2, 'tags': ['x', 'caf\u00e9', '\U0001f642']},
     {'id': 2**64 - 1, 'tags': ['x', 'a' * 65]},
     {'id': 3, 'tags': ['x'] * 9},
