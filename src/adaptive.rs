@@ -72,6 +72,9 @@ use tokio::time::Instant;
 
 pub(crate) const CEILING: usize = 4096;
 
+/// Cooldown after the batch that most recently observed congestion.
+pub(crate) const RECOVERY_INTERVALS: u32 = 4;
+
 /// Longer than any request waits: the deadline where there is no target.
 const NEVER: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
@@ -88,6 +91,8 @@ pub(crate) type Cpu = Option<(Duration, Duration)>;
 pub(crate) struct Delay {
     target: OnceLock<Duration>,
     congested: AtomicBool,
+    /// The last congestion observation showed the loop making progress.
+    productive: AtomicBool,
     tracking: AtomicBool,
     /// Number of the newest mark, or zero while none is being kept. A
     /// request carries the number current when it was queued.
@@ -207,6 +212,12 @@ impl State {
 }
 
 impl Work {
+    /// A busy loop must spend real CPU time and account for at least half of
+    /// its handler time to justify waiting for it to clear congestion.
+    fn productive(self, target: Duration) -> bool {
+        self.worked >= target && self.worked.saturating_mul(2) >= self.inside
+    }
+
     /// Whether other threads, and not the loop's own work or a call it was
     /// blocked in, account for the loop's time. See the module's notes.
     fn external(self, target: Duration) -> bool {
@@ -287,6 +298,14 @@ impl Delay {
     pub(crate) fn enable(&self, timeout: Duration) {
         let target = (timeout / 10).clamp(Duration::from_micros(100), Duration::from_millis(5));
         let _ = self.target.set(target);
+    }
+
+    pub(crate) fn target(&self) -> Option<Duration> {
+        self.target.get().copied()
+    }
+
+    pub(crate) fn productive(&self) -> bool {
+        self.productive.load(Ordering::Acquire)
     }
 
     /// Precompute the sample's target deadline once when it is queued.
@@ -380,7 +399,7 @@ impl Delay {
         if let Some(target) = self.target.get()
             && self.congested.load(Ordering::Acquire)
         {
-            let until = now + *target * 4;
+            let until = now + *target * RECOVERY_INTERVALS;
             let mut state = self.state.lock().unwrap();
             if state.until.is_none_or(|earlier| earlier < until) {
                 state.until = Some(until);
@@ -446,10 +465,8 @@ impl Delay {
         // and only for a wait the loop neither worked nor sat blocked
         // through, during which the work being added up was still going on.
         let own = mark.and_then(|mark| mark.work_since(now, cpu, inside));
-        let run_not_blocked = state.run.is_none_or(|run| {
-            run.work_since(now, cpu, inside)
-                .is_some_and(|run| !run.blocked())
-        });
+        let run = state.run.and_then(|run| run.work_since(now, cpu, inside));
+        let run_not_blocked = state.run.is_none() || run.is_some_and(|run| !run.blocked());
         let attributed = state.externally_delayed(own, stamp, now, cpu, inside, target)
             // A request judged against a recent reading sees a short
             // window, which one burst of work elsewhere can fill. It does
@@ -506,7 +523,11 @@ impl Delay {
         // A single scheduling pause or a healthy burst is not persistent
         // congestion. Require delay above target over twenty target periods.
         if now.saturating_duration_since(since) > target * 20 {
-            state.until = Some(now + target * 4);
+            self.productive.store(
+                run.is_some_and(|run| run.productive(target)),
+                Ordering::Release,
+            );
+            state.until = Some(now + target * RECOVERY_INTERVALS);
             self.congested.store(true, Ordering::Release);
         }
     }
@@ -533,6 +554,7 @@ impl Delay {
         state.initial = None;
         self.tracking.store(false, Ordering::Relaxed);
         self.newest.store(0, Ordering::Relaxed);
+        self.productive.store(false, Ordering::Release);
         self.congested.store(false, Ordering::Release);
         false
     }

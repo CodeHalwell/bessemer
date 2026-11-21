@@ -1035,6 +1035,21 @@ async fn admit(state: &ServerState) -> Option<tokio::sync::OwnedSemaphorePermit>
     }
 }
 
+/// Reserve a slot while waiting for a briefly congested loop. The caller has
+/// not started reading the body, and dropping this future returns the slot.
+#[cold]
+async fn admit_after_loop_recovery(
+    state: &ServerState,
+    deadline: Instant,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let permit = state.capacity.clone().try_acquire_owned().ok()?;
+    state
+        .native
+        .recover_before(deadline)
+        .await
+        .then_some(permit)
+}
+
 /// Serve a matched route. The request and its `info` stay with the caller
 /// and are borrowed: passed by value they would be copied into this future
 /// and again into the boxed one below, which made both larger than the
@@ -1128,20 +1143,27 @@ async fn handle(
         ))
         .await;
     }
-    if state.native.overloaded() {
-        return capacity_response("Server event loop is overloaded", true);
-    }
-    // Refused here, before any of a body is read, when no slot is free. The
-    // slot taken is for work, not for waiting: a request gives it up while it
-    // waits for its body and takes one again when the body is in (see
+    let timeout = route.timeout.unwrap_or(state.request_timeout);
+    let deadline = Instant::from_std(info.received) + timeout;
+    let overloaded = state.native.overloaded();
+    // Reserve a slot before reading any of the body. A request gives it up
+    // while it waits for its body and takes one again when the body is in (see
     // `budget::buffer_body` and `uploads::spool`), so a client that declares a
     // body and does not send it holds none. On HTTP/2 it holds a place to
     // wait instead (`budget::BodyWaits`), or is refused.
-    let Some(permit) = admit(state).await else {
-        return capacity_response("Server is at capacity", true);
+    let permit = if overloaded {
+        Box::pin(admit_after_loop_recovery(state, deadline)).await
+    } else {
+        admit(state).await
     };
-    let timeout = route.timeout.unwrap_or(state.request_timeout);
-    let deadline = Instant::from_std(info.received) + timeout;
+    let Some(permit) = permit else {
+        let detail = if overloaded {
+            "Server event loop is overloaded"
+        } else {
+            "Server is at capacity"
+        };
+        return capacity_response(detail, true);
+    };
     let mut body_complete = false;
     // Admission and byte budgets move into each blocking spool operation, so
     // a cancelled upload keeps them until the thread has finished.
