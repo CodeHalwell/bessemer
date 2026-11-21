@@ -836,6 +836,7 @@ pub struct Member<'a, T> {
 /// Where a parsed string's validated UTF-8 bytes live.
 enum Text {
     Input(usize, usize),
+    Ascii(usize, usize),
     Scratch,
 }
 
@@ -895,7 +896,7 @@ impl<'a, S: Sink> Parser<'a, S> {
                 self.position += 1;
                 let location = self.string()?;
                 let text = match location {
-                    Text::Input(start, end) => &self.input[start..end],
+                    Text::Input(start, end) | Text::Ascii(start, end) => &self.input[start..end],
                     Text::Scratch => &self.scratch[..],
                 };
                 // SAFETY: `string` validated these bytes as UTF-8.
@@ -1026,9 +1027,10 @@ impl<'a, S: Sink> Parser<'a, S> {
             // ASCII (nearly every API string) is valid UTF-8; the word-wise
             // ASCII check is cheaper than the general validator's call.
             let text = &input[start..end];
-            if !text.is_ascii() {
-                std::str::from_utf8(text).map_err(|_| ParseError)?;
+            if text.is_ascii() {
+                return Ok(Text::Ascii(start, end));
             }
+            std::str::from_utf8(text).map_err(|_| ParseError)?;
             return Ok(Text::Input(start, end));
         }
         self.scratch.clear();
@@ -1305,9 +1307,25 @@ impl Sink for ValueSink {
 /// one-character strings, as `json.loads` does, with nothing allocated.
 #[inline]
 pub(crate) fn new_str(value: &str) -> *mut ffi::PyObject {
-    let length = value.len() as ffi::Py_ssize_t;
     #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
     if value.len() > 1 && value.is_ascii() {
+        // SAFETY: the bytes are ASCII.
+        return unsafe { new_ascii_str(value.as_bytes()) };
+    }
+    // SAFETY: `value` is valid UTF-8 for its whole length.
+    unsafe {
+        ffi::PyUnicode_FromStringAndSize(value.as_ptr().cast(), value.len() as ffi::Py_ssize_t)
+    }
+}
+
+/// Build a Unicode object from bytes already checked by the parser.
+///
+/// Safety: every byte must be ASCII.
+#[inline]
+unsafe fn new_ascii_str(value: &[u8]) -> *mut ffi::PyObject {
+    let length = value.len() as ffi::Py_ssize_t;
+    #[cfg(not(any(Py_LIMITED_API, PyPy, GraalPy)))]
+    if value.len() > 1 {
         // SAFETY: a string made by `PyUnicode_New` with maximum character
         // 127 is compact ASCII with room for `length` one-byte characters
         // (and its terminator, which it writes). Filling it before anyone
@@ -1324,7 +1342,8 @@ pub(crate) fn new_str(value: &str) -> *mut ffi::PyObject {
             return object;
         }
     }
-    // SAFETY: `value` is valid UTF-8 for its whole length.
+    // SAFETY: ASCII is valid UTF-8, and this path reuses CPython's short
+    // string singletons.
     unsafe { ffi::PyUnicode_FromStringAndSize(value.as_ptr().cast(), length) }
 }
 

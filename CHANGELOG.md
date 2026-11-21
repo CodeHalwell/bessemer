@@ -9,6 +9,22 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+## [1.0.0rc10] - 2026-11-21
+
+### Fixed
+
+- Adaptive admission gives a CPU-busy event loop a bounded chance to recover
+  before returning a 503 when connections run on separate I/O threads.
+  Requests waiting for recovery use the existing in-flight capacity and
+  retain their original deadline.
+
+### Performance
+
+- Typed JSON decoding reuses the parser's ASCII check when constructing
+  Python strings and avoids repeating list and nullable value lookahead.
+- Reduced JSON encoding work for ordered response models, including
+  short string fields on free-threaded Python.
+
 ## [1.0.0rc9] - 2026-11-20
 
 ### Fixed

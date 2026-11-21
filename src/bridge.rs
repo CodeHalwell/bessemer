@@ -623,6 +623,40 @@ impl Lanes {
         !self.lanes.is_empty() && self.lanes.iter().all(|lane| lane.delay.overloaded())
     }
 
+    /// Give a productive batch time to drain and let its cooldown elapse.
+    /// Several short handlers can share a batch. On a busy host their wall
+    /// time can exceed the cooldown even when the loop is doing useful work.
+    /// Callers hold an admission slot and use the original request deadline.
+    pub(crate) async fn recover_before(&self, deadline: Instant) -> bool {
+        // Connections served on the loop's thread cannot observe an active
+        // batch. Once they see congestion, it has already run; waiting out
+        // the cooldown there would admit all of the next batch after a pause.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.lanes.iter().any(|lane| lane.local.get().is_some()) {
+            return false;
+        }
+        let Some(target) = self.lanes.first().and_then(|lane| lane.delay.target()) else {
+            return true;
+        };
+        let grace = target * (4 * crate::adaptive::RECOVERY_INTERVALS);
+        let until = (Instant::now() + grace).min(deadline);
+        loop {
+            let now = Instant::now();
+            if now >= until {
+                return false;
+            }
+            if !self.overloaded() {
+                return true;
+            }
+            if !self.lanes.iter().any(|lane| lane.delay.productive()) {
+                // Another connection can have cleared congestion after the
+                // overload check above.
+                return !self.overloaded();
+            }
+            tokio::time::sleep_until((now + target).min(until)).await;
+        }
+    }
+
     pub(crate) fn new(lanes: Vec<Arc<Shared>>) -> Self {
         if lanes.len() > 1 {
             for lane in &lanes {
@@ -1919,6 +1953,69 @@ mod tests {
         tokio::time::advance(Duration::from_millis(20)).await;
         assert!(!lanes.overloaded());
         assert!(Arc::ptr_eq(lanes.choose().unwrap(), &first));
+    }
+
+    fn congested_lane(cpu: Option<Duration>) -> (Lanes, Arc<Shared>) {
+        let shared = Bridge::new(None).unwrap().shared.clone();
+        let lanes = Lanes::new(vec![shared.clone()]);
+        lanes.enable_adaptive(Duration::from_secs(30));
+        let now = Instant::now();
+        let first_late = now - Duration::from_millis(101);
+        let deadline = first_late - Duration::from_millis(1);
+        shared
+            .delay
+            .observe(&mut None, deadline, first_late, 0, None, || {
+                cpu.map(|_| (Duration::ZERO, Duration::ZERO))
+            });
+        shared.delay.ran_handler(Duration::from_millis(100));
+        shared.delay.observe(&mut None, deadline, now, 0, None, || {
+            cpu.map(|worked| (worked, worked))
+        });
+        assert!(lanes.overloaded());
+        (lanes, shared)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn admission_waits_for_a_short_batch_to_drain_and_cool_down() {
+        let (lanes, shared) = congested_lane(Some(Duration::from_millis(95)));
+        let start = Instant::now();
+        let drain = async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            shared.delay.batch_done(Instant::now(), || None);
+        };
+        let (allowed, ()) =
+            tokio::join!(lanes.recover_before(start + Duration::from_secs(30)), drain);
+        assert!(allowed);
+        assert!(start.elapsed() >= Duration::from_millis(25));
+        assert!(start.elapsed() < Duration::from_millis(40));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn admission_refuses_a_persistent_batch_and_respects_request_deadlines() {
+        let (lanes, _shared) = congested_lane(Some(Duration::from_millis(95)));
+        let start = Instant::now();
+        assert!(!lanes.recover_before(start + Duration::from_secs(30)).await);
+        assert!((80..=81).contains(&start.elapsed().as_millis()));
+        assert!(lanes.overloaded());
+
+        let start = Instant::now();
+        assert!(
+            !lanes
+                .recover_before(start + Duration::from_millis(12))
+                .await
+        );
+        assert!((12..=13).contains(&start.elapsed().as_millis()));
+        assert!(lanes.overloaded());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn admission_refuses_a_blocked_or_unmeasured_loop_immediately() {
+        for cpu in [Some(Duration::from_millis(8)), None] {
+            let (lanes, _shared) = congested_lane(cpu);
+            let start = Instant::now();
+            assert!(!lanes.recover_before(start + Duration::from_secs(30)).await);
+            assert_eq!(start.elapsed(), Duration::ZERO);
+        }
     }
 
     #[test]

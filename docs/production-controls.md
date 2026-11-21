@@ -69,7 +69,15 @@ in the same batch: a batch takes requests in the order they came, and the
 last of them may be on time only because it came just before the batch. A
 request started on time first in a batch, or in a batch of its own, ends the
 run.
-New requests receive `503` with `Retry-After` when all loops are congested.
+When all loops are congested, a request on a separate I/O thread can reserve
+one worker admission slot before it reads its body if a loop is doing
+measurable CPU work. The loop's own CPU time must reach one target interval
+and account for at least half of the time spent inside handlers over the
+congestion run. The request waits at most sixteen target intervals or until
+its request deadline, whichever comes first. If no loop recovers in that
+time, the request receives `503` with `Retry-After`. When no slot is
+available, no loop qualifies, or connections run on the Python loop's
+thread, the overload response is immediate.
 This is a reactive delay signal, not a guarantee on latency or CPU utilization.
 Already admitted requests finish normally; response and upload byte budgets
 continue to apply.

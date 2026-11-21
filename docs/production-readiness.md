@@ -39,6 +39,60 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## RC10 CPU admission and typed JSON
+
+- With separate I/O threads and adaptive admission, a congested loop can drain
+  briefly if its CPU measurements show that it is making progress. The wait
+  uses an existing admission permit and is bounded by the request's original
+  deadline and the loop recovery window (at most 80 ms). Blocked loops and
+  exhausted permits return HTTP 503.
+- Typed JSON decoding carries the result of ASCII validation to Python string
+  construction and avoids repeating lookahead on list and nullable values.
+- Ordered response model encoding precompiles field separators. On
+  free-threaded Python, it reads each matching dictionary under its critical
+  section and takes strong references before releasing the lock for nested
+  values. Short unescaped strings can be copied with their quotes in one step.
+
+On Apple Silicon, `BESSEMER_REQUIRE_NATIVE=1 ./scripts/check.sh` with the
+installed CPython 3.14.7 wheel passed formatting, linting and 414 Rust tests
+(two ignored). The final standard Python run passed 1,263 of 1,290 tests,
+with 26 skips and one supervisor replacement timing failure. That test
+passed twice on the final RC10 wheel and once on RC9 in isolated reruns.
+The benchmark harness passed 79 tests with four skips. On the CPython
+3.14.7t wheel, 55 focused tests passed with the GIL disabled, including
+Pydantic fallbacks, response byte bounds, and concurrent mutation of model
+dictionaries and nested lists.
+
+The local benchmark used an Apple M5 Max, one worker per server, IPv6
+loopback HTTP/1.1, and Pydantic 2.14.4 on both CPython builds. RC8 and RC9
+were rebuilt from verified PyPI source distributions. FastAPI 0.165.0 used
+Uvicorn 0.54.0, uvloop 0.23.0 and httptools 0.9.0. Three rotated rounds
+per case used one second of warmup, two measured seconds and a drain
+after the deadline. The host was shared. The harness qualified 135 of
+144 samples and counted 6,343,037 successful responses with zero transport
+or response-length errors. Nine samples returned 503s.
+
+Standard Python RC10 served all 2,300 timed CPU requests at 16 clients
+without a 503 in warmup or measurement. RC8 returned 3,781 timed 503s and
+RC9 returned 5,953. Their CPU throughput ratios were excluded. RC10
+delivered 376 successful req/s with 77.9 ms p99. FastAPI delivered 385
+req/s with 92.8 ms p99. One free-threaded RC10 CPU trial returned 95
+503s and was excluded from throughput comparisons.
+
+| Python and 64-client workload | RC10 req/s | vs RC8 | vs RC9 | vs FastAPI |
+| --- | ---: | ---: | ---: | ---: |
+| 3.14, typed echo | 47,537 | 0.974× | 1.022× | 6.452× |
+| 3.14, 256-model response | 29,683 | 1.070× | 1.008× | 8.589× |
+| 3.14t, typed echo | 32,987 | 1.054× | 1.066× | 5.317× |
+| 3.14t, 256-model response | 19,290 | 1.021× | 0.957× | 8.018× |
+
+Ratios are medians of matched rounds. On 3.14t, the 64-client typed echo
+throughput ratio against RC9 ranged from 1.041× to 1.118×, and server CPU
+per reply was 0.913×. The model response throughput ratio ranged from
+0.779× to 1.075×, with 0.927× server CPU per reply and 1.106× p99. In
+six alternating direct encoder pairs, the same 256-model payload used
+0.822× RC9 thread CPU (0.777× to 0.983×).
+
 ## 20 November 2026: RC8 file response fixes
 
 Bessemer `1.0.0rc9` includes these two RC8 fixes. The tests and measurements
