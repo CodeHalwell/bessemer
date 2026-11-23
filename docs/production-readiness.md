@@ -39,6 +39,100 @@ Python application routes remain Tier 2. Native health, static documentation and
 native control rejections do not execute a Python handler. The specified Tier 1
 batching/native coroutine path and its performance targets are not qualified.
 
+## 23 November 2026: free-threaded typed bodies and model responses
+
+The [RC10 GCP report](../benchmarks/results/2026-11-23/rc10-gcp-python314/report.md)
+measured free-threaded CPython 3.14 at 0.81× to 0.90× of standard 3.14 on
+typed echo, the 1,000-item typed upload and 256-model responses. Local
+`perf` profiles of the running server attribute most of the difference to
+uncontended object locks and atomic reference counts:
+
+- Building one four-field model took nine critical sections: one for each
+  `PyDict_SetItem` on its new `__dict__`, one for each `PyMember_SetOne` on
+  its three Pydantic slots, one to install the dict and one to copy the
+  field-name set. None could be contended, since nothing else had a
+  reference to the instance.
+- Encoding a response took two critical sections for each item (its dict and
+  its `tags` list) and a strong reference to each. A handler that returns
+  module-level data returns objects the import thread owns, so each
+  reference taken on the event loop thread is an atomic update. `_Py_IncRef`
+  and `_Py_DecRefShared` were 14% of the 256-model route and the critical
+  sections 16%.
+- PyO3's `is_exact_instance` takes and releases a reference to the type. For
+  an application's model class that is the same shared, atomic count.
+
+**Decoding.** A free-threaded build now makes a new instance's `__dict__`
+in one call: a keyword call to an object that has `tp_call` and no
+vectorcall, for which CPython collects the keywords into a fresh, presized
+dict without locking it. The standard build keeps the item sets, which are
+cheaper there. On both builds a class without its own `__new__` is allocated
+through `tp_alloc`, as `object.__new__` does, and its three slots are written
+with plain stores while the instance is still private. A class with its own
+`__new__` keeps `tp_new`, `PyMember_SetOne` and the generic sets. Installing
+the dict and copying the field-name set still lock, inside CPython.
+
+**Encoding is unchanged.** A second change was built and measured: under a
+container's critical section, the model encoder wrote nested lists and
+response dicts in place, taking each nested lock with a compare-and-swap
+only when it was free and never waiting for one (a thread that blocks gives
+up the critical sections it holds, so a value borrowed from a locked
+container cannot be waited on). It removed every reference count and
+out-of-line critical section from the 256-model profile, and passed the full
+installed check on both builds. Against the decoding change alone, eight
+interleaved pairs on free-threaded 3.14 gave 0.959× (0.853–1.100) for typed
+echo, 0.990× (0.912–1.133) for the large upload and 1.000× (0.798–1.150) for
+256-model responses: the two inline atomic operations it kept for each
+nested container cost what the calls they replaced did. It also put a lock
+taken outside a critical section in the encoder, which a debug build of
+CPython asserts against. With no measured gain it was not kept.
+
+**Remaining free-threaded cost.** Model responses still take two critical
+sections and two references for each item of this shape, and the references
+are atomic for objects another thread owns; reading a nested container
+safely through the public C API needs its lock either way. The field-name
+set copied into each instance is one object shared by every thread of a
+worker, so its lock is a point of contention for several event loops in one
+process, which these one-thread workers do not measure. Object allocation
+and CPython's own locking when it installs a `__dict__` are outside this
+code.
+
+**Measurements.** The [local report](../benchmarks/results/2026-11-23/ft-typed-json-local/report.md)
+compares wheels built from `main` (`eef777e`) and from this change on CPython
+3.14.6 and 3.14.6t, with the GCP run's harness, routes and package versions,
+on one core of a shared four-CPU host. It is not the two-machine GCP
+comparison, the four-core configuration was not run, and identical rounds
+moved by up to 10%. All 240 matrix samples qualified, with 35,367,013 timed
+HTTP 200 replies and no errors.
+
+| Free-threaded 3.14.6t, one core | Interleaved, 8 pairs | Matrix, 3 rounds | Matrix over Axum |
+| --- | ---: | ---: | ---: |
+| Typed echo | 1.101× (0.986–1.206) | 1.105× (1.059–1.128) | 1.083× (1.040–1.133) |
+| 1,000-item typed upload | 1.188× (1.033–1.228) | 1.200× (1.187–1.223) | 1.153× (1.112–1.238) |
+| 256-model response | 0.989× (0.940–1.049) | 1.033× (0.985–1.049) | 1.007× (0.979–1.083) |
+
+Ratios are the candidate over `main`. Typed echo improved in 7 of 8
+interleaved pairs and the upload in all 8, where median p99 fell from 20.9 ms
+to 16.3 ms in the matrix. Model responses did not change. On standard 3.14.6
+the four interleaved ratios all cross parity (small JSON 1.007×, typed echo
+0.978×, upload 0.993×, 256 models 0.995×). Free-threaded over standard
+throughput in the matrix moved from 0.879× to 0.926× for typed echo and from
+0.773× to 0.894× for the upload; FastAPI measured 0.934× and 0.959×.
+
+**Validation.** With each installed wheel, `BESSEMER_REQUIRE_NATIVE=1
+./scripts/check.sh` passed on Linux x86_64 for CPython 3.14.6 and for
+3.14.6t with the GIL disabled: formatting, Clippy, 431 Rust tests (two
+ignored), 1,293 Python tests (39 skipped on 3.14.6, 58 on 3.14.6t) and 83
+harness tests (one skipped). The new tests cover the keyword-built dict,
+classes with their own `__new__`, and nested response values with every
+kind of string: their bytes and byte limits, their reference counts, and
+their mutation by other threads during encoding.
+
+**Open.** The GCP two-machine comparison has not been rerun with this
+change; its runner installs the published RC10 wheels by hash. The
+free-threaded slowdown of model responses is unchanged, and typed bodies
+remain below standard Python. The formal M0 gate and performance acceptance
+remain open.
+
 ## RC10 CPU admission and typed JSON
 
 - With separate I/O threads and adaptive admission, a congested loop can drain
