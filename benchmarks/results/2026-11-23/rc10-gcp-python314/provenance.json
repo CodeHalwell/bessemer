@@ -1,0 +1,218 @@
+{
+  "study_date": "2026-11-23",
+  "region": "us-central1",
+  "zone": "us-central1-a",
+  "topology": "dedicated server and load generator, private same-zone VPC, Ubuntu 24.04, x86_64",
+  "server": {
+    "machine_type": "c3-standard-8",
+    "cpu_platform": "Intel Sapphire Rapids",
+    "threads_per_core": 1,
+    "provisioning_model": "STANDARD"
+  },
+  "load_generator": {
+    "machine_type": "e2-highcpu-16",
+    "cpu_platform": "AMD Rome",
+    "threads_per_core": null,
+    "provisioning_model": "STANDARD"
+  },
+  "release_commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+  "released_wheel_sha256_by_python_mode": {
+    "standard": "bd342f9c91c1fba6f75a42c1a3e09cb3b39f7ffc520a83f23445feb9020606fd",
+    "free-threaded": "228fc4874c76b14ebeb3d89b74112ffbaaf389c82bea497346a5aec009d210e6"
+  },
+  "python_packages": {
+    "annotated-doc": "0.0.7",
+    "annotated-types": "0.8.0",
+    "anyio": "4.16.0",
+    "bessemer": "1.0.0rc10",
+    "click": "8.5.1",
+    "fastapi": "0.165.0",
+    "h11": "0.16.0",
+    "httptools": "0.9.0",
+    "idna": "3.20",
+    "opentelemetry-api": "1.45.2",
+    "pydantic": "2.14.4",
+    "pydantic-core": "2.50.5",
+    "starlette": "1.10.0",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.5",
+    "uvicorn": "0.54.0",
+    "uvloop": "0.23.0"
+  },
+  "native_axum": "0.8.9",
+  "oha_version": "oha 1.16.0",
+  "benchmark_source_file_sha256": {
+    "benchmarks/compare/README.md": "1c66c21f625c41e0f0505463a32fb47f47408d9e8c798f98caffcfb04957f117",
+    "benchmarks/compare/axum_app/.gitignore": "b53ee26e6ff1da219b0563333a76d2c9ec19eec713d6ee54e11a1edacb0e9f3d",
+    "benchmarks/compare/axum_app/Cargo.lock": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+    "benchmarks/compare/axum_app/Cargo.toml": "0442d248d378ddc9845cf4c932d09318bd99c6cd6ae59ed6660d6d0e4098dd24",
+    "benchmarks/compare/axum_app/src/main.rs": "87c3780b543365c9614fa09e84796f71da5b83c329089e9522bb0e6f41999752",
+    "benchmarks/compare/bench_parts.py": "38b1baf4b2f4e2497849f2483f472e2e664d0165a5bee4ba0828dc71e62bd701",
+    "benchmarks/compare/bessemer_app.py": "811e0c81de0babedfe953fe15d644d5c827ea2979259d5b8771d8bbfda4990d2",
+    "benchmarks/compare/cpu_isolation.py": "b2d24799652170bbf098af2b2a280dc4fc88eb989e3d4a60c5032f9f77cfa721",
+    "benchmarks/compare/fastapi_app.py": "b537e24e4f1876c7b4f3f8802159b374bb9d23205100876a8cd3e58e2ecfe7f0",
+    "benchmarks/compare/feature_matrix_app.py": "c1681dafabe2bf7616eadbf60c4d634caa4a76404ae40ecbc9c3bde70c3f3f84",
+    "benchmarks/compare/isolate_cpus.sh": "7967e4d53020d8824166a4ed36b670bf4c390e166557fdcd9050e38f4238dcaf",
+    "benchmarks/compare/matrix.py": "8297ad97e6ee346fdb253dc9952f70ddbf4a0825c0ac6df4c7903c183f6ec1ce",
+    "benchmarks/compare/measurement.py": "398823bfe76dd74eb45a1fbfa9a33f0ac7d2186014bca0392efbdd1aa80bc2a0",
+    "benchmarks/compare/remote/bootstrap.sh": "06a221f457492502d6c672831560f4aa771b7b42498229eac765d5741c4a582a",
+    "benchmarks/compare/remote/gcp.sh": "c99d68cc670336184fd69eeeed4a6b997b1cf05db3a0ca9ff6763ca7377379e9",
+    "benchmarks/compare/remote/run_two_machines.sh": "ce5a3c93c18f94e0f6856176cf2367b9454ed7e7ad23e8ebd491cf854c7d799f",
+    "benchmarks/compare/run_compare.py": "2cd9837ab446422500d8a66ca55ddf5958b46bbf4eab76c5508fc5f2520f59ae",
+    "benchmarks/compare/run_concurrency.sh": "2c7cc14a8ff44e4f8e62de88a9324922e2dc2b3301af30eb44ebece3c2699732",
+    "benchmarks/compare/run_matrix.sh": "31a166aba5001b72a94448cb60e32abe83e6593192bdd270176519273b34c8e1",
+    "benchmarks/compare/server_agent.py": "a52eafae4dc315021bf3ac9eb70ce8f9864c04c4e7180f77cab41f310cb9bcd4",
+    "benchmarks/compare/servers.py": "4394a07df9d8eb65a848d9a53c5d30c6be369e27c560162629ac1e6d2e6c9e1a",
+    "benchmarks/compare/summarise.py": "b9f43d415d8a5c1712ccce76bb5b6bbf8cf6b22316c3720b1ef474d509d8cfcf",
+    "benchmarks/compare/summarise_matrix.py": "773d6dcb856298a2a3d6cda5f112c5ddb3c9ec61f473bdda141ea5675a9bcd81"
+  },
+  "series": [
+    {
+      "stage": "smoke",
+      "python_mode": "standard",
+      "started_utc": "2026-11-23T14:48:01Z",
+      "samples": 24,
+      "qualified": 24,
+      "settings": {
+        "rounds": 1,
+        "duration": 3,
+        "warmup": 1,
+        "connections": 4,
+        "route_connections": {},
+        "client_cpus": null,
+        "configs": "1-core",
+        "frameworks": "bessemer-auto,fastapi-standard,axum",
+        "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+        "check_bodies": true,
+        "large_echo_input": {
+          "bytes": 69403,
+          "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+        }
+      },
+      "bundle_sha256": "2cdb4554c30b3b8263123c7bc4c65b72b4ce43b060319e6b66b98fe5d3f3dabe",
+      "local_observations_sha256": "ce0b6b49866e803b76d66769104b025cb685f707bfda4ce9dbe8a8208b6332ac",
+      "native": {
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "cargo_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "binary_sha256": "207cac3a45ae6f1e5647ec6238ea9f041e08a3c6329b32ef8bc00947b037fb37"
+      }
+    },
+    {
+      "stage": "measured",
+      "python_mode": "standard",
+      "started_utc": "2026-11-23T14:51:33Z",
+      "samples": 144,
+      "qualified": 144,
+      "settings": {
+        "rounds": 3,
+        "duration": 5,
+        "warmup": 2,
+        "connections": 64,
+        "route_connections": {
+          "cpu-inline": 16,
+          "cpu-sync": 16,
+          "large-echo": 16,
+          "bytes": 16
+        },
+        "client_cpus": null,
+        "configs": "1-core,4-core",
+        "frameworks": "bessemer-auto,fastapi-standard,axum",
+        "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+        "check_bodies": true,
+        "large_echo_input": {
+          "bytes": 69403,
+          "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+        }
+      },
+      "bundle_sha256": "554b2ee85e734bb5b81af3bf00d466fbd25f2e366267533c1087165358401a93",
+      "local_observations_sha256": "07c0e0fda211f2ea3eb947ad64603f59c365457fafbbcff86c18d758f33e855c",
+      "native": {
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "cargo_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "binary_sha256": "b711be06dc18063ab77589e180ea290baa295d38221070fa58959a3e1e5c86e4"
+      }
+    },
+    {
+      "stage": "smoke",
+      "python_mode": "free-threaded",
+      "started_utc": "2026-11-23T15:13:38Z",
+      "samples": 24,
+      "qualified": 24,
+      "settings": {
+        "rounds": 1,
+        "duration": 3,
+        "warmup": 1,
+        "connections": 4,
+        "route_connections": {},
+        "client_cpus": null,
+        "configs": "1-core",
+        "frameworks": "bessemer-auto,fastapi-standard,axum",
+        "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+        "check_bodies": true,
+        "large_echo_input": {
+          "bytes": 69403,
+          "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+        }
+      },
+      "bundle_sha256": "e70acb15c4ca2cd33ce1bb95510fa414f0a7e23d7f8622d0d704aa9f8975d774",
+      "local_observations_sha256": "25f46b379df253998bbacf769375c3762783275c8b6d8cf1ec05b70c954d80f8",
+      "native": {
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "cargo_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "binary_sha256": "32bbb7d67261c4f40d394bdb584272ed038ce850038f93e52c633eb9e836beb8"
+      }
+    },
+    {
+      "stage": "measured",
+      "python_mode": "free-threaded",
+      "started_utc": "2026-11-23T15:17:19Z",
+      "samples": 144,
+      "qualified": 144,
+      "settings": {
+        "rounds": 3,
+        "duration": 5,
+        "warmup": 2,
+        "connections": 64,
+        "route_connections": {
+          "cpu-inline": 16,
+          "cpu-sync": 16,
+          "large-echo": 16,
+          "bytes": 16
+        },
+        "client_cpus": null,
+        "configs": "1-core,4-core",
+        "frameworks": "bessemer-auto,fastapi-standard,axum",
+        "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+        "check_bodies": true,
+        "large_echo_input": {
+          "bytes": 69403,
+          "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+        }
+      },
+      "bundle_sha256": "1d561dfa46ece8ee177f0a1e9ac8e4a759c8f30e355e87f1f00b11fc48621a61",
+      "local_observations_sha256": "2f3c65c9a88c6b306f9f8a0b2006be3018faf5b4728bb2b3e15be7b114ea4a0e",
+      "native": {
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "cargo_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "binary_sha256": "af7b4004634b178ccd4a1080f98d1bbec8b07210ae5c1b61bd87640247aa20e7"
+      }
+    }
+  ],
+  "cleanup": {
+    "verified_utc": "2026-11-23T15:40:53+00:00",
+    "remaining_resources_by_kind": {
+      "instances": 0,
+      "disks": 0,
+      "firewall-rules": 0,
+      "networks subnets": 0,
+      "networks": 0
+    }
+  },
+  "published_artifact_sha256": {
+    "samples.csv": "c0eddd6490cc08e5d0c583d4f574bbc0a74feb3e7f2a05e0c0e000c8664c41dd",
+    "summary.json": "6e1e7dc6b52990b9b52bfdde00385f85e1839d29cb2530e35040901fafa68e42",
+    "report.md": "8380dd68a132354327197ec01b31f3d4d2d0e07229ea8055351442a385affb54",
+    "benchmark-source.patch": "9c7ea44ba9b996874d898ed5a083ba85ab1d531511ca2a8e984f46ddd368b5a2",
+    "analyse_314.py": "2bec1475d8579d1ec76b742cb20b7b53ce03acab5b8ec88e5d37954429c5dc4e"
+  }
+}
