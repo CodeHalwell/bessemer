@@ -94,6 +94,26 @@ pub fn instance_with_dict<'py>(
     attributes: &Bound<'py, pyo3::types::PyDict>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     let py = kind.py();
+    let Some(instance) = allocate_plain(kind)? else {
+        return Ok(None);
+    };
+    // Through the `__dict__` descriptor, as assignment does: on CPython 3.13
+    // `PyObject_GenericSetDict` leaves a managed dict's inline values in
+    // place, so attribute lookups would miss the new dict.
+    instance.setattr(pyo3::intern!(py, "__dict__"), attributes)?;
+    Ok(Some(instance))
+}
+
+/// A new instance of `kind` straight from its allocator, as `object.__new__`
+/// returns it, or None when `kind` has its own `__new__` or is abstract.
+///
+/// Nothing but the caller can reach the instance yet: no Python code ran to
+/// make it (no `__new__`, no `__init__`), so its slots are empty and no
+/// other thread holds it until the caller hands it on.
+pub fn allocate_plain<'py>(
+    kind: &Bound<'py, pyo3::types::PyType>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let py = kind.py();
     let raw = kind.as_type_ptr();
     // SAFETY: `raw` is a live type object borrowed for this call. `object`'s
     // `tp_new` is what a class without its own `__new__` inherits (both
@@ -101,7 +121,7 @@ pub fn instance_with_dict<'py>(
     // is a copy of the base's pointer); for such a class `object.__new__`
     // refuses an abstract class and otherwise returns `tp_alloc(kind, 0)`: a
     // new, initialised instance or NULL with an exception set.
-    let instance = unsafe {
+    unsafe {
         let object_new = (*std::ptr::addr_of!(ffi::PyBaseObject_Type))
             .tp_new
             .map(|new| new as usize);
@@ -111,13 +131,98 @@ pub fn instance_with_dict<'py>(
             return Ok(None);
         }
         let alloc = (*raw).tp_alloc.unwrap_or(ffi::PyType_GenericAlloc);
-        Bound::from_owned_ptr_or_err(py, alloc(raw, 0))?
-    };
-    // Through the `__dict__` descriptor, as assignment does: on CPython 3.13
-    // `PyObject_GenericSetDict` leaves a managed dict's inline values in
-    // place, so attribute lookups would miss the new dict.
-    instance.setattr(pyo3::intern!(py, "__dict__"), attributes)?;
-    Ok(Some(instance))
+        Bound::from_owned_ptr_or_err(py, alloc(raw, 0)).map(Some)
+    }
+}
+
+/// Whether `object`'s type is exactly `kind`.
+///
+/// PyO3's `is_exact_instance` takes a reference to the type for the
+/// comparison and releases it. For a class the application defined, a
+/// free-threaded build counts that reference in a field every thread
+/// shares, with an atomic update each way; this compares the pointers.
+#[inline]
+pub fn is_exactly(object: &Bound<'_, PyAny>, kind: &Bound<'_, PyAny>) -> bool {
+    // SAFETY: `object` is a live object borrowed for the comparison.
+    unsafe { ffi::Py_TYPE(object.as_ptr()).cast::<ffi::PyObject>() == kind.as_ptr() }
+}
+
+/// The callable [`dict_from_keywords`] calls: an object whose type has a
+/// `tp_call` and no vectorcall, so CPython builds the keyword dict for it.
+static KEYWORDS: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
+
+/// `tp_call` of [`KEYWORDS`]: return the keyword dict it was called with.
+unsafe extern "C" fn keywords_call(
+    _callable: *mut ffi::PyObject,
+    _args: *mut ffi::PyObject,
+    keywords: *mut ffi::PyObject,
+) -> *mut ffi::PyObject {
+    // SAFETY: `keywords` is NULL (no keywords) or the dict CPython built for
+    // this call, borrowed; the result is a new reference either way.
+    unsafe {
+        if keywords.is_null() {
+            ffi::PyDict_New()
+        } else {
+            ffi::Py_INCREF(keywords);
+            keywords
+        }
+    }
+}
+
+fn keywords_callable(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    KEYWORDS
+        .get_or_try_init(py, || {
+            let mut slots = [
+                ffi::PyType_Slot {
+                    slot: ffi::Py_tp_call,
+                    pfunc: keywords_call as *mut std::ffi::c_void,
+                },
+                ffi::PyType_Slot {
+                    slot: 0,
+                    pfunc: std::ptr::null_mut(),
+                },
+            ];
+            let mut spec = ffi::PyType_Spec {
+                name: c"bessemer._native._Keywords".as_ptr(),
+                // Inherited from `object`: the instance has no state.
+                basicsize: 0,
+                itemsize: 0,
+                flags: ffi::Py_TPFLAGS_DEFAULT as std::ffi::c_uint,
+                slots: slots.as_mut_ptr(),
+            };
+            // SAFETY: the spec and its slots are valid for the call, which
+            // copies what it keeps (the name is a static string). It returns
+            // a new type, or NULL with an exception set.
+            let kind =
+                unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyType_FromSpec(&mut spec)) }?;
+            Ok(kind.call0()?.unbind())
+        })
+        .map(|callable| callable.bind(py))
+}
+
+/// A new dict `{names[i]: values[i], ...}`, in that order, built in one
+/// call: `names` is a tuple of distinct `str` and `values` holds one live
+/// object for each.
+///
+/// Setting the items one by one locks the new dict once per item on a
+/// free-threaded build, although nothing else can reach it yet. A call with
+/// keywords to an object that has no vectorcall makes CPython collect them
+/// into a fresh, presized dict without locking it, and hand that dict to
+/// `tp_call`, which here gives it straight back.
+pub fn dict_from_keywords<'py>(
+    names: &Bound<'py, pyo3::types::PyTuple>,
+    values: &[*mut ffi::PyObject],
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let py = names.py();
+    if values.is_empty() {
+        // Checked like the general case: a call without keywords would
+        // otherwise hide a count that does not match.
+        assert!(names.is_empty(), "one value is needed for each name");
+        return Ok(pyo3::types::PyDict::new(py));
+    }
+    let built = vectorcall_raw(keywords_callable(py)?, values, 0, Some(names))?;
+    // SAFETY: `keywords_call` returns the dict CPython built for the call.
+    Ok(unsafe { built.cast_into_unchecked() })
 }
 
 /// Call `each` with every key and value of `dict`, in order, as strong
@@ -404,6 +509,53 @@ mod tests {
                 .collect();
             let result = call_with_keywords(&callable, &values, &names).unwrap();
             assert_eq!(result.extract::<(i64, i64)>().unwrap(), (2, 1));
+        });
+    }
+
+    #[test]
+    fn a_keyword_dict_holds_the_named_values_in_order() {
+        Python::attach(|py| {
+            for width in [0usize, 1, 4, 40] {
+                let names: Vec<_> = (0..width)
+                    .map(|index| pyo3::types::PyString::intern(py, &format!("field_{index}")))
+                    .collect();
+                let values: Vec<_> = (0..width)
+                    .map(|index| (width - index).into_pyobject(py).unwrap().into_any())
+                    .collect();
+                let tuple = pyo3::types::PyTuple::new(py, &names).unwrap();
+                let pointers: Vec<_> = values.iter().map(|value| value.as_ptr()).collect();
+                let built = dict_from_keywords(&tuple, &pointers).unwrap();
+                assert!(built.is_exact_instance_of::<pyo3::types::PyDict>());
+                assert_eq!(built.len(), width);
+                for (index, (key, value)) in built.iter().enumerate() {
+                    // The names themselves, not equal copies of them.
+                    assert!(key.is(&names[index]));
+                    assert!(value.is(&values[index]));
+                }
+                // Each call makes its own dict, which the caller may change.
+                let again = dict_from_keywords(&tuple, &pointers).unwrap();
+                assert!(!again.is(&built));
+                built.set_item("extra", 1).unwrap();
+                assert_eq!(again.len(), width);
+            }
+        });
+    }
+
+    #[test]
+    fn exact_types_are_told_from_subclasses_without_a_type_reference() {
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::from_code(
+                py,
+                c"class Base: pass\nclass Derived(Base): pass\n",
+                c"exact.py",
+                c"exact",
+            )
+            .unwrap();
+            let base = module.getattr("Base").unwrap();
+            let derived = module.getattr("Derived").unwrap();
+            assert!(is_exactly(&base.call0().unwrap(), &base));
+            assert!(!is_exactly(&derived.call0().unwrap(), &base));
+            assert!(!is_exactly(&base, &base));
         });
     }
 

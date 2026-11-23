@@ -28,8 +28,8 @@ use crate::{
 };
 use axum::http::StatusCode;
 use bessemer_codec::runtime::{
-    Guarded, Sent, call_with_keywords, instance_with_dict, new_context, send, set_in_context,
-    vectorcall,
+    Guarded, Sent, call_with_keywords, instance_with_dict, is_exactly, new_context, send,
+    set_in_context, vectorcall,
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyStopIteration},
@@ -599,7 +599,7 @@ pub(crate) struct Invocation {
 /// (a task factory's own type) by name.
 fn task_cancelled(hooks: &Hooks, task: &Bound<'_, PyAny>) -> bool {
     let py = task.py();
-    let cancelled = if task.get_type().is(hooks.task_type.bind(py)) {
+    let cancelled = if is_exactly(task, hooks.task_type.bind(py)) {
         hooks.task_cancelled.bind(py).call1((task,))
     } else {
         task.call_method0(intern!(py, "cancelled"))
@@ -1259,12 +1259,12 @@ impl Call {
             }
             _ => call.bind(py).call0()?,
         };
-        if awaitable.is_exact_instance(self.hooks().coroutine_type.bind(py)) {
+        if is_exactly(&awaitable, self.hooks().coroutine_type.bind(py)) {
             return Ok(awaitable);
         }
         // A generator-based coroutine (`types.coroutine`) is awaitable through
         // its code flag rather than `__await__`.
-        if awaitable.is_exact_instance(self.hooks().generator_type.bind(py))
+        if is_exactly(&awaitable, self.hooks().generator_type.bind(py))
             && awaitable
                 .getattr(intern!(py, "gi_code"))?
                 .getattr(intern!(py, "co_flags"))?

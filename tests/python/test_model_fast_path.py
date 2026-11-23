@@ -1342,6 +1342,222 @@ class EncodeTests(unittest.TestCase):
             )
         self.assertEqual(counts(), before)
 
+    def test_nested_response_values_match_pydantic_for_every_kind_of_text(self):
+        """Response dicts, their lists and nested dicts are read in one pass.
+
+        A free-threaded build reads short ASCII strings in place and others
+        through a reference: ASCII, Latin-1, two-byte and four-byte text
+        must all come out as Pydantic writes them, at any nesting, and the
+        byte limit must be exact for each.
+        """
+
+        class Leaf(BaseModel):
+            n: int
+            words: list[str]
+
+        class Row(BaseModel):
+            id: int
+            name: str
+            score: float | None
+            flag: bool
+            tags: list[str]
+            grid: list[list[int]]
+            leaf: Leaf | None
+            leaves: list[Leaf]
+
+        texts = [
+            "",
+            "a",
+            "x" * 300,
+            'q"\\\n\x00\x7f',
+            "café",
+            "ÿ" * 70,
+            "snow☃man",
+            "\U0001f642",
+            "aé☃\U0001f642" * 40,
+        ]
+        rng = random.Random(23)
+
+        def leaf():
+            return {"n": rng.randrange(-5, 5), "words": rng.choices(texts, k=2)}
+
+        def row():
+            return {
+                "id": rng.randrange(-(2**40), 2**40),
+                "name": rng.choice(texts),
+                "score": rng.choice([None, 0.0, -1.5, 1e300, 3.25]),
+                "flag": rng.random() < 0.5,
+                "tags": rng.choices(texts, k=rng.randrange(12)),
+                "grid": [[1, -2, 3]] * rng.randrange(3),
+                "leaf": rng.choice([None, leaf()]),
+                "leaves": [leaf() for _ in range(rng.randrange(4))],
+            }
+
+        plan = self.plan(list[Row])
+        self.assertIsNotNone(plan)
+        adapter = TypeAdapter(list[Row])
+        encode = self.native._encode_model_response_json
+        for count in (0, 1, 1, 1, 2, 3, 17, 60):
+            rows = [row() for _ in range(count)]
+            expected = adapter.dump_json(adapter.validate_python(rows), by_alias=True)
+            self.assertEqual(encode(plan, rows, len(expected)), expected)
+            self.assertIsNone(encode(plan, rows, len(expected) - 1))
+            # The same rows as instances, and as instances inside dicts.
+            self.assertEqual(
+                encode(plan, adapter.validate_python(rows), len(expected)), expected
+            )
+            mixed = [
+                dict(item, leaf=item["leaf"] and Leaf(**item["leaf"])) for item in rows
+            ]
+            self.assertEqual(encode(plan, mixed, len(expected)), expected)
+        # A lone surrogate is refused wherever it is, and nothing is raised.
+        for change in (
+            {"name": "\ud800"},
+            {"tags": ["ok", "a\udfffb"]},
+            {"leaves": [{"n": 1, "words": ["\ud800\U0001f642"]}]},
+            {"leaf": {"n": 1, "words": ["\udc00"]}},
+        ):
+            self.assertIsNone(encode(plan, [row(), dict(row(), **change)], 1 << 20))
+
+    def test_nested_response_values_give_back_every_reference(self):
+        import sys
+
+        class Leaf(BaseModel):
+            n: int
+            words: list[str]
+
+        class Row(BaseModel):
+            name: str
+            tags: list[str]
+            leaf: Leaf
+            leaves: list[Leaf]
+
+        # Made here rather than written as constants, which are immortal on
+        # a free-threaded build.
+        def text(character):
+            return "".join([character] * 40)
+
+        def leaf(character):
+            return {"n": int("1" + "0" * 15), "words": [text(character)]}
+
+        rows = [
+            {
+                "name": text("n"),
+                "tags": [text("t"), text("é"), text("☃")],
+                "leaf": leaf("l"),
+                "leaves": [leaf("m"), leaf("\U0001f642")],
+            }
+            for _ in range(3)
+        ]
+        watched = [rows]
+        for item in rows:
+            watched += [item, item["name"], item["tags"], *item["tags"], item["leaf"]]
+            watched += [item["leaf"]["words"], item["leaf"]["words"][0], item["leaves"]]
+            watched += [*item["leaves"], item["leaves"][1]["words"][0]]
+        if hasattr(sys, "_is_immortal"):
+            self.assertFalse(any(sys._is_immortal(value) for value in watched))
+        plan = self.plan(list[Row])
+        adapter = TypeAdapter(list[Row])
+        expected = adapter.dump_json(adapter.validate_python(rows))
+        encode = self.native._encode_model_response_json
+
+        def counts():
+            return [sys.getrefcount(value) for value in watched]
+
+        before = counts()
+        for _ in range(300):
+            self.assertEqual(encode(plan, rows, 1 << 20), expected)
+            # Refused part way through, at several depths.
+            for short in (1, 40, len(expected) // 2, len(expected) - 3):
+                self.assertIsNone(encode(plan, rows, short))
+        self.assertEqual(counts(), before)
+
+    def test_encoding_while_other_threads_change_nested_values_in_place(self):
+        """Nested containers are read from references taken under a lock.
+
+        Other threads resize the nested lists, swap the nested dicts and
+        replace strings of one kind with another while the rows are encoded.
+        Every result is whole JSON made of values the rows held at some time.
+        """
+        import threading
+
+        class Leaf(BaseModel):
+            n: int
+            words: list[str]
+
+        class Row(BaseModel):
+            id: int
+            name: str
+            tags: list[str]
+            leaf: Leaf
+            leaves: list[Leaf]
+
+        texts = ["a", "x" * 90, "café", "snow☃man", "\U0001f642" * 5]
+        rows = [
+            {
+                "id": index,
+                "name": "a",
+                "tags": ["a"],
+                "leaf": {"n": 0, "words": ["a"]},
+                "leaves": [{"n": 1, "words": ["a"]}],
+            }
+            for index in range(12)
+        ]
+        fixed = tuple(rows)
+        plan = self.plan(list[Row])
+        encode = self.native._encode_model_response_json
+        stop = threading.Event()
+        failures = []
+
+        def mutate(seed):
+            rng = random.Random(seed)
+            while not stop.is_set():
+                item = rng.choice(fixed)
+                text = rng.choice(texts)
+                item["name"] = text
+                item["tags"].append(text)
+                if len(item["tags"]) > 6:
+                    del item["tags"][:4]
+                item["leaf"]["words"][:] = [text] * rng.randrange(4)
+                item["leaf"]["n"] += 1
+                if rng.random() < 0.3:
+                    item["leaf"] = {"n": 0, "words": [text]}
+                item["leaves"].append({"n": 2, "words": [text]})
+                if len(item["leaves"]) > 3:
+                    item["leaves"].clear()
+                # One thread moves rows, so at most one is out at a time.
+                if seed == 0 and rng.random() < 0.05:
+                    rows.append(rows.pop(0))
+
+        def check():
+            try:
+                for _ in range(1500):
+                    encoded = encode(plan, rows, 1 << 22)
+                    if encoded is None:
+                        continue
+                    decoded = json.loads(encoded)
+                    # A row is briefly out of the list while it is moved.
+                    assert len(decoded) in (11, 12), len(decoded)
+                    for item in decoded:
+                        assert set(item) == {"id", "name", "tags", "leaf", "leaves"}
+                        words = [item["name"], *item["tags"], *item["leaf"]["words"]]
+                        for nested in item["leaves"]:
+                            words += nested["words"]
+                        assert set(words) <= set(texts), words
+            except BaseException as error:  # noqa: BLE001 -- Reported below.
+                failures.append(error)
+
+        mutators = [threading.Thread(target=mutate, args=(seed,)) for seed in range(3)]
+        checkers = [threading.Thread(target=check) for _ in range(3)]
+        for thread in mutators + checkers:
+            thread.start()
+        for thread in checkers:
+            thread.join()
+        stop.set()
+        for thread in mutators:
+            thread.join()
+        self.assertEqual(failures, [])
+
     def test_encoding_while_another_thread_reorders_the_fields(self):
         """Fields in order, out of order and missing, changing under the encoder.
 
