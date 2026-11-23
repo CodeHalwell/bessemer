@@ -101,6 +101,10 @@ pub struct ModelBody {
     #[cfg(not(Py_GIL_DISABLED))]
     encode_ordered_dict: bool,
     all_fields: Py<PySet>,
+    /// Every field's name, in field order: the keys of a new instance's
+    /// `__dict__`, which a free-threaded build makes from them in one call.
+    #[cfg(Py_GIL_DISABLED)]
+    names: Py<PyTuple>,
     /// Whether an exact instance's `__dict__` can be installed with
     /// `PyObject_GenericSetDict`. On CPython 3.13 that call leaves a class's
     /// inline values in place (attribute reads would miss the new dict and
@@ -176,6 +180,38 @@ impl SlotMember {
     #[cfg(any(Py_LIMITED_API, PyPy, GraalPy))]
     fn find(_: &Bound<'_, PyType>, _: &Bound<'_, PyString>) -> Option<Self> {
         None
+    }
+
+    /// Store `value` in this slot of an instance that
+    /// [`super::runtime::allocate_plain`] has just made of exactly the class
+    /// the member was found on, taking the reference.
+    ///
+    /// `PyMember_SetOne` makes the same store under the instance's critical
+    /// section on a free-threaded build, which keeps two writers from both
+    /// releasing the old value. This instance has one writer: nothing else
+    /// can reach it before the caller returns it.
+    ///
+    /// # Safety
+    ///
+    /// `instance` is such an instance and `value` an owned reference.
+    unsafe fn init(&self, instance: &Bound<'_, PyAny>, value: *mut ffi::PyObject) {
+        // SAFETY: the member's offset is inside the instance, at a
+        // pointer-aligned object slot (`find` checked its kind). The store
+        // is atomic so that the collector, or a thread handed the instance
+        // by it, reads a whole pointer.
+        unsafe {
+            let slot = std::sync::atomic::AtomicPtr::from_ptr(
+                instance
+                    .as_ptr()
+                    .byte_offset((*self.definition).offset)
+                    .cast::<*mut ffi::PyObject>(),
+            );
+            // One writer, so a load and a store rather than an exchange.
+            let old = slot.load(std::sync::atomic::Ordering::Relaxed);
+            slot.store(value, std::sync::atomic::Ordering::Release);
+            // Empty in a new instance; released as the member set does.
+            ffi::Py_XDECREF(old);
+        }
     }
 
     /// Store `value` in this slot of `instance`, which the caller has checked
@@ -380,6 +416,8 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
             }
             let all_fields =
                 PySet::new(py, fields.iter().map(|field| field.name.bind(py)))?.unbind();
+            #[cfg(Py_GIL_DISABLED)]
+            let names = PyTuple::new(py, fields.iter().map(|field| field.name.bind(py)))?.unbind();
             let distinct_keys = fields
                 .iter()
                 .enumerate()
@@ -408,6 +446,8 @@ fn node(spec: &Bound<'_, PyAny>, depth: usize) -> PyResult<Node> {
                 #[cfg(not(Py_GIL_DISABLED))]
                 encode_ordered_dict,
                 all_fields,
+                #[cfg(Py_GIL_DISABLED)]
+                names,
                 direct_dict,
                 key_index,
                 slots,
@@ -554,38 +594,39 @@ fn assemble<'py>(
     let complete = slots.iter().all(Option::is_some);
     let fields_set = if complete {
         // SAFETY: `PySet_New` on a set copies its table without rehashing
-        // and returns a new reference, or null with an exception set.
-        unsafe { Bound::from_owned_ptr_or_err(py, ffi::PySet_New(body.all_fields.as_ptr()))? }
-            .cast_into::<PySet>()?
-    } else {
-        PySet::empty(py)?
-    };
-    let values = PyDict::new(py);
-    for (field, slot) in body.fields.iter().zip(slots.iter_mut()) {
-        let name = field.name.bind(py);
-        match slot.take() {
-            Some(built) => {
-                values.set_item(name, built)?;
-                if !complete {
-                    fields_set.add(name)?;
-                }
-            }
-            None => match field.default.as_ref() {
-                Some(Default::Shared(value)) => values.set_item(name, value.bind(py))?,
-                // The deep copy Pydantic makes of a mutable default.
-                Some(Default::Fresh(value)) => {
-                    values.set_item(name, rebuild(py, value.bind(py))?)?
-                }
-                None => return Ok(None),
-            },
+        // and returns a new set, or null with an exception set.
+        unsafe {
+            Bound::from_owned_ptr_or_err(py, ffi::PySet_New(body.all_fields.as_ptr()))?
+                .cast_into_unchecked::<PySet>()
         }
-    }
+    } else {
+        let given = PySet::empty(py)?;
+        for (field, slot) in body.fields.iter().zip(slots.iter_mut()) {
+            if slot.is_some() {
+                given.add(field.name.bind(py))?;
+                continue;
+            }
+            *slot = Some(match field.default.as_ref() {
+                Some(Default::Shared(value)) => value.bind(py).clone(),
+                // The deep copy Pydantic makes of a mutable default.
+                Some(Default::Fresh(value)) => rebuild(py, value.bind(py))?,
+                None => return Ok(None),
+            });
+        }
+        given
+    };
+    let values = field_dict(py, body, slots)?;
     let cls = body.cls.bind(py);
-    let instance = instantiate(py, cls)?;
-    // `tp_new` is the class's own and may hand back an object of another
-    // type, whose layout this plan knows nothing about: it gets the generic
+    // A class without its own `__new__` is allocated directly, so the
+    // instance is this function's alone until it returns. Any other goes
+    // through its `tp_new`, which may hand back an object of another type,
+    // whose layout this plan knows nothing about: that one gets the generic
     // sets, through its type's descriptors.
-    let exact = instance.is_exact_instance(cls);
+    let (instance, fresh) = match super::runtime::allocate_plain(cls)? {
+        Some(instance) => (instance, true),
+        None => (instantiate(py, cls)?, false),
+    };
+    let exact = fresh || super::runtime::is_exactly(&instance, cls.as_any());
     // The same attributes, in the same order, that pydantic-core's model
     // validator sets on an instance it builds.
     if exact && body.direct_dict {
@@ -596,6 +637,13 @@ fn assemble<'py>(
     let none = py.None().into_bound(py);
     // The members' offsets are this class's.
     match body.slots.as_ref().filter(|_| exact) {
+        // SAFETY: `allocate_plain` made the instance, of exactly `cls`, and
+        // each value is an owned reference the slot takes.
+        Some(slots) if fresh => unsafe {
+            slots.extra.init(&instance, none.clone().into_ptr());
+            slots.private.init(&instance, none.into_ptr());
+            slots.fields_set.init(&instance, fields_set.into_ptr());
+        },
         Some(slots) => {
             slots.extra.set(&instance, &none)?;
             slots.private.set(&instance, &none)?;
@@ -612,6 +660,63 @@ fn assemble<'py>(
         }
     }
     Ok(Some(instance))
+}
+
+/// The `__dict__` of a new instance: every field's name, in field order, to
+/// the value taken out of its slot. Every slot holds one.
+///
+/// The keys are the plan's own interned names, as the encoder expects of a
+/// dict it reads in order (see `fields_in_order`).
+#[cfg(not(Py_GIL_DISABLED))]
+fn field_dict<'py>(
+    py: Python<'py>,
+    body: &ModelBody,
+    slots: &mut [Option<Bound<'py, PyAny>>],
+) -> PyResult<Bound<'py, PyDict>> {
+    let values = PyDict::new(py);
+    for (field, slot) in body.fields.iter().zip(slots.iter_mut()) {
+        let value = slot.take().expect("a field without a value");
+        values.set_item(field.name.bind(py), value)?;
+    }
+    Ok(values)
+}
+
+/// A model's field slots are read from the stack up to this many fields when
+/// its `__dict__` is built, and from the heap beyond it.
+#[cfg(Py_GIL_DISABLED)]
+const DICT_FIELDS: usize = 16;
+
+/// As above. Setting the items one by one would lock the new dict once for
+/// each, so a free-threaded build makes it in one call (see
+/// `runtime::dict_from_keywords`); with a GIL that call costs more than the
+/// sets it replaces.
+#[cfg(Py_GIL_DISABLED)]
+fn field_dict<'py>(
+    py: Python<'py>,
+    body: &ModelBody,
+    slots: &mut [Option<Bound<'py, PyAny>>],
+) -> PyResult<Bound<'py, PyDict>> {
+    let pointer = |slot: &Option<Bound<'py, PyAny>>| {
+        // `assemble` filled every slot; an empty one would be read by CPython.
+        slot.as_ref().expect("a field without a value").as_ptr()
+    };
+    let mut inline = [std::ptr::null_mut(); DICT_FIELDS];
+    let spilled: Vec<*mut ffi::PyObject>;
+    let pointers: &[*mut ffi::PyObject] = if slots.len() <= DICT_FIELDS {
+        for (target, slot) in inline.iter_mut().zip(slots.iter()) {
+            *target = pointer(slot);
+        }
+        &inline[..slots.len()]
+    } else {
+        spilled = slots.iter().map(pointer).collect();
+        &spilled
+    };
+    let values = super::runtime::dict_from_keywords(body.names.bind(py), pointers);
+    // The dict holds its own references; these are released either way.
+    for slot in slots.iter_mut() {
+        *slot = None;
+    }
+    values
 }
 
 /// Create an uninitialised instance through the class's `tp_new`, as
@@ -2562,6 +2667,11 @@ class Other:
 class Elsewhere(Slotted):
     def __new__(cls, *args):
         return Other()
+class Custom(Slotted):
+    made = 0
+    def __new__(cls, *args):
+        cls.made += 1
+        return object.__new__(cls)
 def spec(cls):
     return ('model', cls, False, (('a', 'a', 'a', ('int',), False, None),))
 "#,
@@ -2577,6 +2687,7 @@ def spec(cls):
                 ("Guarded", false),
                 ("Plain", false),
                 ("Elsewhere", true),
+                ("Custom", true),
             ] {
                 let cls = locals.get_item(name).unwrap().unwrap();
                 let plan = ModelPlan::from_spec(&spec.call1((&cls,)).unwrap()).unwrap();
@@ -2616,7 +2727,96 @@ def spec(cls):
                     if slotted {
                         assert_eq!(values.len().unwrap(), 1, "{name}");
                     }
+                    let given = instance.getattr("__pydantic_fields_set__").unwrap();
+                    assert!(given.is_exact_instance_of::<PySet>(), "{name}");
+                    assert_eq!(given.len().unwrap(), 1, "{name}");
+                    assert!(given.contains("a").unwrap(), "{name}");
                 }
+            }
+            // A class with its own `__new__` is made by it, once for each
+            // instance, and never allocated behind its back.
+            let made: usize = locals
+                .get_item("Custom")
+                .unwrap()
+                .unwrap()
+                .getattr("made")
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(made, 2);
+        });
+    }
+
+    /// Response dicts holding every string kind, nested lists and nested
+    /// response dicts. The bytes and the byte limit are those of the plain
+    /// encoder on the same value.
+    const NESTED_VALUES: &std::ffi::CStr = cr#"class Record: pass
+class Child: pass
+child = ('model', Child, False,
+         (('n', 'n', 'n', ('int',), False, None),
+          ('words', 'words', 'words', ('list', ('str',)), False, None)))
+spec = ('list', ('model', Record, False,
+        (('id', 'id', 'id', ('int',), False, None),
+         ('name', 'name', 'name', ('str',), False, None),
+         ('score', 'score', 'score', ('nullable', ('float',)), False, None),
+         ('flag', 'flag', 'flag', ('bool',), False, None),
+         ('tags', 'tags', 'tags', ('list', ('str',)), False, None),
+         ('grid', 'grid', 'grid', ('list', ('list', ('int',))), False, None),
+         ('child', 'child', 'child', ('nullable', child), False, None),
+         ('children', 'children', 'children', ('list', child), False, None))))
+texts = ['', 'a', 'x' * 300, 'q"\\\n\x00', 'café', 'ÿ' * 70,
+         'snow☃man', '\U0001f642', 'aé☃\U0001f642' * 40]
+def record(index):
+    text = texts[index % len(texts)]
+    kid = {'n': index, 'words': [text, 'w']}
+    return {'id': index - 3, 'name': text, 'score': None if index % 4 == 0 else index * 0.5,
+            'flag': index % 2 == 0, 'tags': [text] * (index % 12),
+            'grid': [[index, -index]] * (index % 3), 'child': None if index % 5 == 0 else kid,
+            'children': [dict(kid) for _ in range(index % 4)]}
+values = [record(index) for index in range(40)]
+"#;
+
+    #[test]
+    fn nested_response_values_match_the_plain_encoder_at_every_limit() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(NESTED_VALUES, Some(&locals), None).unwrap();
+            let plan = ModelPlan::from_spec(&locals.get_item("spec").unwrap().unwrap()).unwrap();
+            let values = locals.get_item("values").unwrap().unwrap();
+            let expected = super::super::encode_plain(&values, usize::MAX, <[u8]>::to_vec).unwrap();
+            assert_eq!(
+                encode_response_vec(&values, &plan, expected.len()),
+                Some(expected.clone())
+            );
+            // The limit is exact wherever the output would cross it.
+            for limit in (0..expected.len()).step_by(7) {
+                assert!(
+                    encode_response_vec(&values, &plan, limit).is_none(),
+                    "{limit}"
+                );
+            }
+            // One record at a time, so each string kind is also the first
+            // value met, and the last before the limit.
+            for record in values.cast::<PyList>().unwrap().iter() {
+                let one = PyList::new(py, [record]).unwrap();
+                let expected =
+                    super::super::encode_plain(one.as_any(), usize::MAX, <[u8]>::to_vec).unwrap();
+                assert_eq!(
+                    encode_response_vec(one.as_any(), &plan, expected.len()),
+                    Some(expected.clone())
+                );
+                assert!(encode_response_vec(one.as_any(), &plan, expected.len() - 1).is_none());
+            }
+            // A lone surrogate anywhere is refused, as the general path
+            // refuses it, with nothing raised.
+            for expression in [
+                cr"[dict(record(1), name='\ud800')]",
+                cr"[dict(record(1), tags=['ok', 'a\udfffb'])]",
+                cr"[dict(record(1), children=[{'n': 1, 'words': ['\ud800\U0001f642']}])]",
+            ] {
+                let value = py.eval(expression, Some(&locals), None).unwrap();
+                assert!(encode_response_vec(&value, &plan, usize::MAX).is_none());
+                assert!(PyErr::take(py).is_none());
             }
         });
     }

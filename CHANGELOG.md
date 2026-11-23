@@ -9,6 +9,15 @@ package). Detailed test evidence for each candidate lives in
 
 ## [Unreleased]
 
+### Performance
+
+- On free-threaded Python, building a model from a typed JSON body no longer
+  locks its new `__dict__` once for each field, or the new instance once for
+  each Pydantic slot: the dict is made in one call and the slots are written
+  directly while nothing else can reach the instance.
+- Type identity checks on the request path no longer take a reference to the
+  type, which a free-threaded build counts in a field every thread shares.
+
 ## [1.0.0rc10] - 2026-11-21
 
 ### Fixed
