@@ -1399,7 +1399,10 @@ class EncodeTests(unittest.TestCase):
         encode = self.native._encode_model_response_json
         for count in (0, 1, 1, 1, 2, 3, 17, 60):
             rows = [row() for _ in range(count)]
-            expected = adapter.dump_json(adapter.validate_python(rows), by_alias=True)
+            # Through the plain encoder, as elsewhere here: Pydantic's own
+            # dump_json spells a large float's exponent differently from
+            # one release to the next (1e300 or 1e+300).
+            expected = self.pydantic_bytes(list[Row], adapter.validate_python(rows))
             self.assertEqual(encode(plan, rows, len(expected)), expected)
             self.assertIsNone(encode(plan, rows, len(expected) - 1))
             # The same rows as instances, and as instances inside dicts.
@@ -1458,7 +1461,7 @@ class EncodeTests(unittest.TestCase):
             self.assertFalse(any(sys._is_immortal(value) for value in watched))
         plan = self.plan(list[Row])
         adapter = TypeAdapter(list[Row])
-        expected = adapter.dump_json(adapter.validate_python(rows))
+        expected = self.pydantic_bytes(list[Row], adapter.validate_python(rows))
         encode = self.native._encode_model_response_json
 
         def counts():
