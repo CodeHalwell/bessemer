@@ -1,0 +1,5273 @@
+{
+  "settings": {
+    "rounds": 3,
+    "duration": 5,
+    "warmup": 2,
+    "connections": 64,
+    "route_connections": {
+      "cpu-inline": 16,
+      "cpu-sync": 16,
+      "large-echo": 16,
+      "bytes": 16
+    },
+    "client_cpus": null,
+    "configs": "1-core,4-core",
+    "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+    "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+    "check_bodies": true,
+    "large_echo_input": {
+      "bytes": 69403,
+      "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+    }
+  },
+  "same_hosts_and_settings": true,
+  "dependencies": {
+    "annotated-doc": "0.0.7",
+    "annotated-types": "0.8.0",
+    "anyio": "4.16.0",
+    "click": "8.5.1",
+    "fastapi": "0.165.0",
+    "h11": "0.16.0",
+    "httptools": "0.9.0",
+    "idna": "3.20",
+    "opentelemetry-api": "1.45.2",
+    "pydantic": "2.14.4",
+    "pydantic-core": "2.50.5",
+    "starlette": "1.10.0",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.5",
+    "uvicorn": "0.54.0",
+    "uvloop": "0.23.0"
+  },
+  "modes": {
+    "standard": {
+      "recorded": 192,
+      "planned": 192,
+      "eligible": 192,
+      "excluded": {},
+      "missing": [],
+      "totals": {
+        "warmup": {
+          "status_codes": {
+            "200": 20135724
+          },
+          "transport_errors": {},
+          "missing": 0
+        },
+        "timed": {
+          "status_codes": {
+            "200": 50432618
+          },
+          "transport_errors": {},
+          "missing": 0
+        }
+      },
+      "hosts": {
+        "client": {
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "AMD EPYC 7B12",
+          "cpus": 16
+        },
+        "server": {
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+          "cpus": 4
+        }
+      },
+      "builds": {
+        "main": {
+          "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+          "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0",
+          "wheel_sha256": "1e159bc725554446ebc98015125de0da474a520c85d476ee5947a90583a96e8e",
+          "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314-manylinux_2_34_x86_64.whl",
+          "native_sha256": "c54841bf3325e370492bfe5f4aa4c5dfd5a5fdc6f6099089e259b87e55937e9a",
+          "versions": {
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0",
+            "pydantic": "2.14.4",
+            "pydantic-core": "2.50.5"
+          }
+        },
+        "rc10": {
+          "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+          "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016",
+          "wheel_sha256": "7be9d692a5085836b3e65c27d7317af8c2eb23f677472667edb8a3078de65824",
+          "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314-manylinux_2_34_x86_64.whl",
+          "native_sha256": "12cb0bd2c3fd594072393dfea47cd27148a6087497284f7bf845d534bccb8d8b",
+          "versions": {
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0",
+            "pydantic": "2.14.4",
+            "pydantic-core": "2.50.5"
+          }
+        }
+      },
+      "toolchain": {
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "maturin": "maturin 1.16.0",
+        "axum_sha256": "521e32d1da2709aac185a06f755434c0de47a28196397d138a541cbab284ab54",
+        "axum_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87"
+      },
+      "bundle_sha256": "b996440c3767b0b209e0b463418fc8e9d9ce8b274e389012405cb4cf30ae2426"
+    },
+    "free-threaded": {
+      "recorded": 192,
+      "planned": 192,
+      "eligible": 192,
+      "excluded": {},
+      "missing": [],
+      "totals": {
+        "warmup": {
+          "status_codes": {
+            "200": 19627864
+          },
+          "transport_errors": {},
+          "missing": 0
+        },
+        "timed": {
+          "status_codes": {
+            "200": 49478182
+          },
+          "transport_errors": {},
+          "missing": 0
+        }
+      },
+      "hosts": {
+        "client": {
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "AMD EPYC 7B12",
+          "cpus": 16
+        },
+        "server": {
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+          "cpus": 4
+        }
+      },
+      "builds": {
+        "main": {
+          "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+          "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0",
+          "wheel_sha256": "87b0c5d9815222cab6a35ba8774e4167791f3cad679c070d356c16fce7fc2f4a",
+          "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314t-manylinux_2_34_x86_64.whl",
+          "native_sha256": "d506491b2f7a5e25e453ed36ac06a8f609d8c57588434c70e2fbc31cc60eaf13",
+          "versions": {
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0",
+            "pydantic": "2.14.4",
+            "pydantic-core": "2.50.5"
+          }
+        },
+        "rc10": {
+          "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+          "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016",
+          "wheel_sha256": "1ff7a2555bf229bbdd552d254418a075850ab84a3d527abac6ee0812b7efa596",
+          "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314t-manylinux_2_34_x86_64.whl",
+          "native_sha256": "ac91a25b12892d6038af3cf2baa0ea3fab2663659438b653995c9fc6b22b87b8",
+          "versions": {
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0",
+            "pydantic": "2.14.4",
+            "pydantic-core": "2.50.5"
+          }
+        }
+      },
+      "toolchain": {
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "maturin": "maturin 1.16.0",
+        "axum_sha256": "521e32d1da2709aac185a06f755434c0de47a28196397d138a541cbab284ab54",
+        "axum_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87"
+      },
+      "bundle_sha256": "4d7702c23f172a198df78d7a5d0e039ff9b27b515944f52eee8635b2c0d758e8"
+    }
+  },
+  "workloads": {
+    "1-core/json": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 123922.18033346634,
+              "range": [
+                122487.47948379332,
+                124721.23386064345
+              ]
+            },
+            "p50_ms": 0.50843,
+            "p99_ms": 0.65969,
+            "server_cpu": 0.958,
+            "client_cpu": 0.309,
+            "server_cpu_seconds_per_million": 7.730658042184908,
+            "response_mib_per_second": 2.5999908135759924
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 120535.6247272503,
+              "range": [
+                120498.12397552209,
+                121283.69127196397
+              ]
+            },
+            "p50_ms": 0.52264,
+            "p99_ms": 0.6769700000000001,
+            "server_cpu": 0.96,
+            "client_cpu": 0.304,
+            "server_cpu_seconds_per_million": 7.964450362059362,
+            "response_mib_per_second": 2.5289380493159355
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 11302.164010249258,
+              "range": [
+                11215.83895100941,
+                11303.507700524007
+              ]
+            },
+            "p50_ms": 5.40423,
+            "p99_ms": 10.875630000000001,
+            "server_cpu": 0.994,
+            "client_cpu": 0.034,
+            "server_cpu_seconds_per_million": 87.94775930508536,
+            "response_mib_per_second": 0.2371288378004872
+          },
+          "axum": {
+            "rps": {
+              "median": 152687.78616877648,
+              "range": [
+                150951.8988674265,
+                154054.50720638107
+              ]
+            },
+            "p50_ms": 0.41880999999999996,
+            "p99_ms": 0.52581,
+            "server_cpu": 0.95,
+            "client_cpu": 0.393,
+            "server_cpu_seconds_per_million": 6.228396022120546,
+            "response_mib_per_second": 3.2035172421580147
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0283429911526292,
+            "range": [
+              1.0161931774192046,
+              1.0284158478570158
+            ]
+          },
+          "main_fastapi": {
+            "median": 11.033852248790136,
+            "range": [
+              10.837524510590779,
+              11.048855183705497
+            ]
+          },
+          "main_axum": {
+            "median": 0.8168383142498402,
+            "range": [
+              0.7950918262956203,
+              0.8209382012630461
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 10.729739341562222,
+            "range": [
+              10.664827073642156,
+              10.743567601305244
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.79432477420231,
+            "range": [
+              0.7824219291797365,
+              0.7982551056303675
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9812442037873575,
+          "range": [
+            0.9671597589760882,
+            0.9881530939332612
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 117947.5864292067,
+              "range": [
+                115652.36111593356,
+                119263.72009870187
+              ]
+            },
+            "p50_ms": 0.53484,
+            "p99_ms": 0.69775,
+            "server_cpu": 0.954,
+            "client_cpu": 0.3,
+            "server_cpu_seconds_per_million": 8.088338463564916,
+            "response_mib_per_second": 2.4746388449120973
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 116177.36263131448,
+              "range": [
+                113862.69241206512,
+                120280.76133977664
+              ]
+            },
+            "p50_ms": 0.54246,
+            "p99_ms": 0.704579,
+            "server_cpu": 0.954,
+            "client_cpu": 0.296,
+            "server_cpu_seconds_per_million": 8.263227691323415,
+            "response_mib_per_second": 2.4374980715645966
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 11040.004854614788,
+              "range": [
+                11021.805928157035,
+                11094.834892608522
+              ]
+            },
+            "p50_ms": 5.52039,
+            "p99_ms": 11.10745,
+            "server_cpu": 0.994,
+            "client_cpu": 0.035,
+            "server_cpu_seconds_per_million": 90.03619229247911,
+            "response_mib_per_second": 0.23162851982262167
+          },
+          "axum": {
+            "rps": {
+              "median": 155039.47594671455,
+              "range": [
+                153617.74519257084,
+                155499.12958747376
+              ]
+            },
+            "p50_ms": 0.41198,
+            "p99_ms": 0.52581,
+            "server_cpu": 0.942,
+            "client_cpu": 0.399,
+            "server_cpu_seconds_per_million": 6.132104066617665,
+            "response_mib_per_second": 3.252857657268257
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9954810343126225,
+            "range": [
+              0.9806022602070248,
+              1.0474345685335686
+            ]
+          },
+          "main_fastapi": {
+            "median": 10.630855490042888,
+            "range": [
+              10.493050038241046,
+              10.802868447005158
+            ]
+          },
+          "main_axum": {
+            "median": 0.7585096247298092,
+            "range": [
+              0.7459542829961711,
+              0.7763668184895974
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 10.540683023144156,
+            "range": [
+              10.313645139790843,
+              10.841149282889171
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.7493405271264166,
+            "range": [
+              0.7412079396773471,
+              0.7735140489780971
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9968506015649061,
+          "range": [
+            0.968465029772232,
+            1.0138209250844694
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.951787534013827,
+          "range": [
+            0.9272868583480905,
+            0.9736809068267424
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.9578976481743191,
+          "range": [
+            0.9446393352149227,
+            0.9981961326153957
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9768045167813232,
+          "range": [
+            0.9750783756838673,
+            0.989211323474826
+          ]
+        },
+        "axum": {
+          "median": 1.0154019508498118,
+          "range": [
+            0.997164886495498,
+            1.0301237066520168
+          ]
+        }
+      }
+    },
+    "1-core/items": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 116655.47445012613,
+              "range": [
+                116094.93729990808,
+                119748.2292226682
+              ]
+            },
+            "p50_ms": 0.54078,
+            "p99_ms": 0.69921,
+            "server_cpu": 0.96,
+            "client_cpu": 0.292,
+            "server_cpu_seconds_per_million": 8.160782890707884,
+            "response_mib_per_second": 2.0025239373228745
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 119347.52126086896,
+              "range": [
+                116322.68288456515,
+                122566.3522148189
+              ]
+            },
+            "p50_ms": 0.52779,
+            "p99_ms": 0.68741,
+            "server_cpu": 0.952,
+            "client_cpu": 0.294,
+            "server_cpu_seconds_per_million": 8.043736391488506,
+            "response_mib_per_second": 2.0487359835583128
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 8772.598318786348,
+              "range": [
+                8769.317234062517,
+                8875.682177619286
+              ]
+            },
+            "p50_ms": 7.04252,
+            "p99_ms": 14.12742,
+            "server_cpu": 0.994,
+            "client_cpu": 0.026,
+            "server_cpu_seconds_per_million": 113.30736503361479,
+            "response_mib_per_second": 0.15059163068595338
+          },
+          "axum": {
+            "rps": {
+              "median": 146888.99885535872,
+              "range": [
+                141774.32026801005,
+                148194.7370918165
+              ]
+            },
+            "p50_ms": 0.43434,
+            "p99_ms": 0.55583,
+            "server_cpu": 0.943,
+            "client_cpu": 0.378,
+            "server_cpu_seconds_per_million": 6.419813650772922,
+            "response_mib_per_second": 2.521516780277688
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9774436303133722,
+            "range": [
+              0.9472007219112752,
+              1.029448653118691
+            ]
+          },
+          "main_fastapi": {
+            "median": 13.238765824203782,
+            "range": [
+              13.143268552842265,
+              13.650257867869056
+            ]
+          },
+          "main_axum": {
+            "median": 0.8080464365510917,
+            "range": [
+              0.7941743449759402,
+              0.81887140830894
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 13.44657445732035,
+            "range": [
+              13.259775343350944,
+              13.976726915379045
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.8125014275465939,
+            "range": [
+              0.7849312679200984,
+              0.8645172975128328
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.0171658835338444,
+          "range": [
+            0.973677590634731,
+            1.0386139936756782
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 112776.88721729438,
+              "range": [
+                111292.75210132849,
+                113210.26444460014
+              ]
+            },
+            "p50_ms": 0.55853,
+            "p99_ms": 0.7320099999999999,
+            "server_cpu": 0.96,
+            "client_cpu": 0.284,
+            "server_cpu_seconds_per_million": 8.494648359589503,
+            "response_mib_per_second": 1.9359435748208034
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 113386.68428220207,
+              "range": [
+                110237.85709397035,
+                113872.2676516923
+              ]
+            },
+            "p50_ms": 0.5557799999999999,
+            "p99_ms": 0.7274999999999999,
+            "server_cpu": 0.96,
+            "client_cpu": 0.284,
+            "server_cpu_seconds_per_million": 8.466602635726671,
+            "response_mib_per_second": 1.9464114352032063
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 8489.129441560559,
+              "range": [
+                8431.671857055482,
+                8490.797901806318
+              ]
+            },
+            "p50_ms": 7.27663,
+            "p99_ms": 14.596680000000001,
+            "server_cpu": 0.996,
+            "client_cpu": 0.025,
+            "server_cpu_seconds_per_million": 117.32651820855085,
+            "response_mib_per_second": 0.14572556490715985
+          },
+          "axum": {
+            "rps": {
+              "median": 143248.50235362217,
+              "range": [
+                141269.86906045277,
+                144797.4299368943
+              ]
+            },
+            "p50_ms": 0.44742000000000004,
+            "p99_ms": 0.55455,
+            "server_cpu": 0.952,
+            "client_cpu": 0.375,
+            "server_cpu_seconds_per_million": 6.659755490112998,
+            "response_mib_per_second": 2.459023516049575
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9946219693364523,
+            "range": [
+              0.9773472891726902,
+              1.0269635806517539
+            ]
+          },
+          "main_fastapi": {
+            "median": 13.335909791921923,
+            "range": [
+              13.107455081182918,
+              13.375388550364963
+            ]
+          },
+          "main_axum": {
+            "median": 0.7903067926331971,
+            "range": [
+              0.7686099963917327,
+              0.7983081457308808
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 13.411256394109593,
+            "range": [
+              12.98576701567002,
+              13.447710751139109
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.7864246464962822,
+            "range": [
+              0.7695567861633765,
+              0.8026246859029875
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.0061993127147766,
+          "range": [
+            0.9762618858687614,
+            1.0187173211703193
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.9667517769644839,
+          "range": [
+            0.9293895435763229,
+            0.9751524664003567
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.950054790282257,
+          "range": [
+            0.8994137061430962,
+            0.9789343301572182
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9678772004895563,
+          "range": [
+            0.9499745133187159,
+            0.9680490755410661
+          ]
+        },
+        "axum": {
+          "median": 0.9770753859307613,
+          "range": [
+            0.9617457410786828,
+            1.0103980896034297
+          ]
+        }
+      }
+    },
+    "1-core/echo": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 44577.23648077179,
+              "range": [
+                44326.471325148865,
+                45141.12121845452
+              ]
+            },
+            "p50_ms": 1.4358190000000002,
+            "p99_ms": 1.8981899999999998,
+            "server_cpu": 0.98,
+            "client_cpu": 0.149,
+            "server_cpu_seconds_per_million": 21.984314806565433,
+            "response_mib_per_second": 48.1662835433144
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 43955.61223087384,
+              "range": [
+                43778.889140896135,
+                43979.2345826101
+              ]
+            },
+            "p50_ms": 1.45487,
+            "p99_ms": 1.94151,
+            "server_cpu": 0.982,
+            "client_cpu": 0.149,
+            "server_cpu_seconds_per_million": 22.340719424907842,
+            "response_mib_per_second": 47.49461045988089
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 6694.383080829317,
+              "range": [
+                6632.878073124612,
+                6738.422434922012
+              ]
+            },
+            "p50_ms": 9.236130000000001,
+            "p99_ms": 18.54393,
+            "server_cpu": 0.994,
+            "client_cpu": 0.025,
+            "server_cpu_seconds_per_million": 148.78144677023965,
+            "response_mib_per_second": 7.233367949084869
+          },
+          "axum": {
+            "rps": {
+              "median": 37829.07893418101,
+              "range": [
+                37361.62597705129,
+                37965.40243185403
+              ]
+            },
+            "p50_ms": 1.5227000000000002,
+            "p99_ms": 3.0248190000000004,
+            "server_cpu": 0.986,
+            "client_cpu": 0.123,
+            "server_cpu_seconds_per_million": 26.06460500176454,
+            "response_mib_per_second": 40.87481158487996
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0182358976105192,
+            "range": [
+              1.0084371272620913,
+              1.0264189826601449
+            ]
+          },
+          "main_fastapi": {
+            "median": 6.699063713267624,
+            "range": [
+              6.621442303187942,
+              6.720647656918617
+            ]
+          },
+          "main_axum": {
+            "median": 1.186417083463541,
+            "range": [
+              1.174154193697424,
+              1.1932915759592182
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 6.566043756406678,
+            "range": [
+              6.526636613740156,
+              6.600285525868683
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.1625774621457154,
+            "range": [
+              1.1531259077123446,
+              1.1764908801847325
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9819002886435819,
+          "range": [
+            0.9633767817434699,
+            0.9927994190089157
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 41235.93912704083,
+              "range": [
+                40617.04966426504,
+                41889.601891096056
+              ]
+            },
+            "p50_ms": 1.5522,
+            "p99_ms": 2.07404,
+            "server_cpu": 0.984,
+            "client_cpu": 0.137,
+            "server_cpu_seconds_per_million": 23.86267951770094,
+            "response_mib_per_second": 44.555968314111006
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 38383.759488166565,
+              "range": [
+                38203.607887345395,
+                38674.89706530356
+              ]
+            },
+            "p50_ms": 1.66591,
+            "p99_ms": 2.1992499999999997,
+            "server_cpu": 0.982,
+            "client_cpu": 0.126,
+            "server_cpu_seconds_per_million": 25.68794753687368,
+            "response_mib_per_second": 41.474151134579394
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 6060.837716034953,
+              "range": [
+                6048.4171205707335,
+                6093.673566099594
+              ]
+            },
+            "p50_ms": 10.20458,
+            "p99_ms": 20.462899,
+            "server_cpu": 0.996,
+            "client_cpu": 0.023,
+            "server_cpu_seconds_per_million": 164.00373126147363,
+            "response_mib_per_second": 6.548813946025469
+          },
+          "axum": {
+            "rps": {
+              "median": 37830.99190107298,
+              "range": [
+                37755.43068022251,
+                38105.513789613695
+              ]
+            },
+            "p50_ms": 1.5247,
+            "p99_ms": 3.02501,
+            "server_cpu": 0.982,
+            "client_cpu": 0.125,
+            "server_cpu_seconds_per_million": 25.957553599649287,
+            "response_mib_per_second": 40.87687857047623
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0662197512100133,
+            "range": [
+              1.0631731375747648,
+              1.09133660823428
+            ]
+          },
+          "main_fastapi": {
+            "median": 6.7670082225022945,
+            "range": [
+              6.701557040012124,
+              6.925713133875813
+            ]
+          },
+          "main_axum": {
+            "median": 1.0900041752770242,
+            "range": [
+              1.0757935728049193,
+              1.099305526291415
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 6.346083400502088,
+            "range": [
+              6.303354367379184,
+              6.346729381839595
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.0118705362128912,
+            "range": [
+              1.007301979973006,
+              1.0223072439241712
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9394850608763158,
+          "range": [
+            0.9118472206434014,
+            0.9470199582661742
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.9250447623604434,
+          "range": [
+            0.8997793711791997,
+            0.945024511060725
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.8732391050898916,
+          "range": [
+            0.868673778657611,
+            0.8834143082259098
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.903506274968274,
+          "range": [
+            0.8994446065928632,
+            0.9187073090925958
+          ]
+        },
+        "axum": {
+          "median": 0.998053131188136,
+          "range": [
+            0.9964596574204023,
+            1.0199104774781302
+          ]
+        }
+      }
+    },
+    "1-core/cpu-inline": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 446.3021896066101,
+              "range": [
+                443.9816137649221,
+                449.2548981793823
+              ]
+            },
+            "p50_ms": 35.825548,
+            "p99_ms": 35.978178,
+            "server_cpu": 0.996,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2236.153044374889,
+            "response_mib_per_second": 0.008086911776090232
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 444.62560844459915,
+              "range": [
+                441.6661096942729,
+                445.49279704633295
+              ]
+            },
+            "p50_ms": 35.959201,
+            "p99_ms": 36.142429,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2244.5850644798206,
+            "response_mib_per_second": 0.008056532440612205
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 432.81381014713304,
+              "range": [
+                432.65093313671764,
+                433.5273302763151
+              ]
+            },
+            "p50_ms": 34.6294,
+            "p99_ms": 69.40593,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2305.8413955431192,
+            "response_mib_per_second": 0.00784250487594178
+          },
+          "axum": {
+            "rps": {
+              "median": 4557.540685404145,
+              "range": [
+                4556.628480457668,
+                4569.050164081757
+              ]
+            },
+            "p50_ms": 3.723149,
+            "p99_ms": 3.94662,
+            "server_cpu": 0.994,
+            "client_cpu": 0.016,
+            "server_cpu_seconds_per_million": 218.10008261327368,
+            "response_mib_per_second": 0.08258178045528293
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0052426573373539,
+            "range": [
+              1.0037707705767915,
+              1.0084448079923907
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0315525876043325,
+            "range": [
+              1.0241144738947456,
+              1.0379865144013316
+            ]
+          },
+          "main_axum": {
+            "median": 0.0979457051459643,
+            "range": [
+              0.09741692821016507,
+              0.0983256655203892
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.0276774517070035,
+            "range": [
+              1.0187733940851442,
+              1.0292943214887014
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.09750227750801324,
+            "range": [
+              0.0969088682211309,
+              0.09757776179284665
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9937077276515929,
+          "range": [
+            0.9922989463122314,
+            0.9954554520948219
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 408.35160324840336,
+              "range": [
+                355.31985020586455,
+                408.4560465613185
+              ]
+            },
+            "p50_ms": 39.157868,
+            "p99_ms": 39.422406,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2443.347352553337,
+            "response_mib_per_second": 0.007399254285545028
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 406.56266353074653,
+              "range": [
+                406.4374569312473,
+                408.21531724885233
+              ]
+            },
+            "p50_ms": 39.326758000000005,
+            "p99_ms": 39.559866,
+            "server_cpu": 0.996,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2450.5615390868925,
+            "response_mib_per_second": 0.00736683903416079
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 392.7014590128937,
+              "range": [
+                386.9570451120511,
+                393.3751870037795
+              ]
+            },
+            "p50_ms": 38.17696,
+            "p99_ms": 76.569189,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2541.370746389899,
+            "response_mib_per_second": 0.00711567661404131
+          },
+          "axum": {
+            "rps": {
+              "median": 4568.144513039504,
+              "range": [
+                4556.45754606797,
+                4570.779470456146
+              ]
+            },
+            "p50_ms": 3.71483,
+            "p99_ms": 3.93689,
+            "server_cpu": 0.996,
+            "client_cpu": 0.015,
+            "server_cpu_seconds_per_million": 218.0316312579376,
+            "response_mib_per_second": 0.08277391981864031
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0005897116112363,
+            "range": [
+              0.8742300793058309,
+              1.0044001574126875
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0383370890075843,
+            "range": [
+              0.918241067565974,
+              1.0398525237844758
+            ]
+          },
+          "main_axum": {
+            "median": 0.08936244883425894,
+            "range": [
+              0.07778209493846454,
+              0.08962041215566544
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.0377251304488868,
+            "range": [
+              1.0352970537789568,
+              1.0503425691953878
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.08922779580852079,
+            "range": [
+              0.08897211017976667,
+              0.08930978181892334
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.998659386554915,
+          "range": [
+            0.9965252662888191,
+            1.1448189641665354
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.9089530351327484,
+          "range": [
+            0.8003030737980023,
+            0.9152006332779796
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.9181102246379415,
+          "range": [
+            0.9126133266941743,
+            0.9202369120252144
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9073219241303706,
+          "range": [
+            0.8925782023140693,
+            0.9092207062904288
+          ]
+        },
+        "axum": {
+          "median": 1.0023266556169907,
+          "range": [
+            0.997243930891199,
+            1.0031055834503884
+          ]
+        }
+      }
+    },
+    "1-core/cpu-sync": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 439.84998788618566,
+              "range": [
+                436.1112160651913,
+                440.55103907765965
+              ]
+            },
+            "p50_ms": 35.84976,
+            "p99_ms": 77.09487,
+            "server_cpu": 0.996,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2264.4083833821137,
+            "response_mib_per_second": 0.007969999093854454
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 439.2676107009681,
+              "range": [
+                435.3777192709363,
+                439.7395929898674
+              ]
+            },
+            "p50_ms": 36.28352,
+            "p99_ms": 77.178549,
+            "server_cpu": 0.996,
+            "client_cpu": 0.002,
+            "server_cpu_seconds_per_million": 2269.5250004995482,
+            "response_mib_per_second": 0.007959446528738397
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 421.2991187227024,
+              "range": [
+                420.2906454765983,
+                421.8322631871377
+              ]
+            },
+            "p50_ms": 35.705937999999996,
+            "p99_ms": 84.71063600000001,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2368.8632509504014,
+            "response_mib_per_second": 0.007633860831958147
+          },
+          "axum": {
+            "rps": {
+              "median": 4490.702213226674,
+              "range": [
+                4486.036747055005,
+                4508.854438392043
+              ]
+            },
+            "p50_ms": 3.551951,
+            "p99_ms": 3.67686,
+            "server_cpu": 0.996,
+            "client_cpu": 0.015,
+            "server_cpu_seconds_per_million": 221.79159354330707,
+            "response_mib_per_second": 0.08137067990427665
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.001325791319529,
+            "range": [
+              0.9917488054691502,
+              1.0118823715080927
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0440325373091828,
+            "range": [
+              1.0376419764723834,
+              1.0443749270126779
+            ]
+          },
+          "main_axum": {
+            "median": 0.09794681700128659,
+            "range": [
+              0.09672328570906763,
+              0.09820495549147534
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.0426502007237581,
+            "range": [
+              1.0321110006651848,
+              1.0462749949888
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.0975280082775722,
+            "range": [
+              0.09705175053609474,
+              0.09781713189691643
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9989157738635381,
+          "range": [
+            0.9633121099648949,
+            1.0247648061217136
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 405.00762500275346,
+              "range": [
+                404.22097463683747,
+                405.08771980856415
+              ]
+            },
+            "p50_ms": 39.47418,
+            "p99_ms": 39.821828,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2463.998808807069,
+            "response_mib_per_second": 0.007338662028362575
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 405.46735578628886,
+              "range": [
+                404.7526265307141,
+                406.03404986777315
+              ]
+            },
+            "p50_ms": 39.428948999999996,
+            "p99_ms": 39.706278999999995,
+            "server_cpu": 0.998,
+            "client_cpu": 0.002,
+            "server_cpu_seconds_per_million": 2461.3572110254404,
+            "response_mib_per_second": 0.007346992263736237
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 375.2850624523129,
+              "range": [
+                375.2240438508224,
+                375.7159761387472
+              ]
+            },
+            "p50_ms": 46.681579,
+            "p99_ms": 68.281499,
+            "server_cpu": 0.998,
+            "client_cpu": 0.003,
+            "server_cpu_seconds_per_million": 2656.261813129424,
+            "response_mib_per_second": 0.00680009478244204
+          },
+          "axum": {
+            "rps": {
+              "median": 4503.458773645916,
+              "range": [
+                4489.003900660405,
+                4504.853943562707
+              ]
+            },
+            "p50_ms": 3.54446,
+            "p99_ms": 3.68669,
+            "server_cpu": 0.996,
+            "client_cpu": 0.017,
+            "server_cpu_seconds_per_million": 221.163343567961,
+            "response_mib_per_second": 0.08160182638098946
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.998866170662139,
+            "range": [
+              0.9955346719529407,
+              1.000827896487596
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.077962212746549,
+            "range": [
+              1.0772789784162748,
+              1.0794133855515187
+            ]
+          },
+          "main_axum": {
+            "median": 0.08993257079932516,
+            "range": [
+              0.08992249801737115,
+              0.09004691989182055
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.0791858252962734,
+            "range": [
+              1.0785204822324779,
+              1.0821109588307722
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.09003465473228482,
+            "range": [
+              0.08984811308013498,
+              0.09045081244149487
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.005195907399707,
+          "range": [
+            0.9977512335411588,
+            1.0077670083363894
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.9209679003410215,
+          "range": [
+            0.9193205533022459,
+            0.9268758971253178
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.9233511294879675,
+          "range": [
+            0.9214260661850844,
+            0.9313001971374787
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.890780554182275,
+          "range": [
+            0.8906762448657657,
+            0.8927727701988905
+          ]
+        },
+        "axum": {
+          "median": 1.0031513401833574,
+          "range": [
+            0.9955974321187627,
+            1.0038836120997778
+          ]
+        }
+      }
+    },
+    "1-core/large-echo": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 1720.2001751488374,
+              "range": [
+                1718.4781376121787,
+                1736.521777154588
+              ]
+            },
+            "p50_ms": 9.28007,
+            "p99_ms": 11.90101,
+            "server_cpu": 0.996,
+            "client_cpu": 0.015,
+            "server_cpu_seconds_per_million": 579.0023826231867,
+            "response_mib_per_second": 99.09176938964389
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 1675.1155700796185,
+              "range": [
+                1666.550865307291,
+                1678.138692947729
+              ]
+            },
+            "p50_ms": 9.52532,
+            "p99_ms": 12.88372,
+            "server_cpu": 0.996,
+            "client_cpu": 0.014,
+            "server_cpu_seconds_per_million": 594.5858409952335,
+            "response_mib_per_second": 96.4946801943962
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 493.229703939574,
+              "range": [
+                489.18266098192316,
+                497.95700901819185
+              ]
+            },
+            "p50_ms": 28.60898,
+            "p99_ms": 73.609421,
+            "server_cpu": 0.998,
+            "client_cpu": 0.005,
+            "server_cpu_seconds_per_million": 2023.3980071124545,
+            "response_mib_per_second": 28.41239338594636
+          },
+          "axum": {
+            "rps": {
+              "median": 1347.5973037210913,
+              "range": [
+                1342.1528176558688,
+                1352.3048273297825
+              ]
+            },
+            "p50_ms": 12.592628999999999,
+            "p99_ms": 12.79826,
+            "server_cpu": 0.996,
+            "client_cpu": 0.01,
+            "server_cpu_seconds_per_million": 739.0931973889876,
+            "response_mib_per_second": 77.62805932680615
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0321918226190199,
+            "range": [
+              1.0240382066357052,
+              1.0366578928473877
+            ]
+          },
+          "main_fastapi": {
+            "median": 3.487624855942538,
+            "range": [
+              3.4872925688473395,
+              3.51295799029901
+            ]
+          },
+          "main_axum": {
+            "median": 1.2816723643684969,
+            "range": [
+              1.2707771967400503,
+              1.2886058560369393
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 3.3788534064271634,
+            "range": [
+              3.363976286592286,
+              3.4304950416256506
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.24169978513922,
+            "range": [
+              1.2409470550078028,
+              1.243038677395805
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9237246695830086,
+          "range": [
+            0.8823228638403342,
+            0.9548673480742024
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 1522.3927039637972,
+              "range": [
+                1517.8558175944788,
+                1525.2157948492552
+              ]
+            },
+            "p50_ms": 10.486489,
+            "p99_ms": 13.26136,
+            "server_cpu": 0.998,
+            "client_cpu": 0.012,
+            "server_cpu_seconds_per_million": 655.5470197679906,
+            "response_mib_per_second": 87.69711160423779
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 1328.511542575958,
+              "range": [
+                1327.5568969008089,
+                1332.7879920280086
+              ]
+            },
+            "p50_ms": 12.02832,
+            "p99_ms": 14.98905,
+            "server_cpu": 0.996,
+            "client_cpu": 0.012,
+            "server_cpu_seconds_per_million": 749.7112129479699,
+            "response_mib_per_second": 76.52862806912955
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 451.27808569171816,
+              "range": [
+                442.2376001379578,
+                451.29643056584933
+              ]
+            },
+            "p50_ms": 33.22007,
+            "p99_ms": 66.68553,
+            "server_cpu": 0.998,
+            "client_cpu": 0.004,
+            "server_cpu_seconds_per_million": 2211.4967060061595,
+            "response_mib_per_second": 25.995779237782337
+          },
+          "axum": {
+            "rps": {
+              "median": 1348.374797393121,
+              "range": [
+                1346.3739368272688,
+                1352.222273271378
+              ]
+            },
+            "p50_ms": 12.58086,
+            "p99_ms": 12.714119,
+            "server_cpu": 0.996,
+            "client_cpu": 0.01,
+            "server_cpu_seconds_per_million": 738.6670248699512,
+            "response_mib_per_second": 77.67284668630285
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.1467626792628127,
+            "range": [
+              1.1388576627891625,
+              1.1480636381163023
+            ]
+          },
+          "main_fastapi": {
+            "median": 3.3797692447471883,
+            "range": [
+              3.3633233387007837,
+              3.4424768574379034
+            ]
+          },
+          "main_axum": {
+            "median": 1.1290575193982515,
+            "range": [
+              1.1224898802490437,
+              1.1328322341439758
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 2.953242928061536,
+            "range": [
+              2.9438866736451827,
+              3.0019086945268154
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.9856278944464116,
+            "range": [
+              0.9845607463647641,
+              0.9867329619485924
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9456122302614243,
+          "range": [
+            0.7709279395304378,
+            0.9762046904548604
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.8832558205852626,
+          "range": [
+            0.8783165376413692,
+            0.8850090390393518
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.7942061032434121,
+          "range": [
+            0.7930864988096396,
+            0.7965894858276793
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9062591298423347,
+          "range": [
+            0.8966159106105596,
+            0.9225519761063775
+          ]
+        },
+        "axum": {
+          "median": 0.9999389530697991,
+          "range": [
+            0.999092186597254,
+            1.0046358206423314
+          ]
+        }
+      }
+    },
+    "1-core/bytes": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 10371.681733428979,
+              "range": [
+                10370.335263874558,
+                10372.176770459475
+              ]
+            },
+            "p50_ms": 1.28844,
+            "p99_ms": 2.66298,
+            "server_cpu": 0.659,
+            "client_cpu": 0.201,
+            "server_cpu_seconds_per_million": 63.538393959388124,
+            "response_mib_per_second": 2592.9204333572447
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 10369.68930080053,
+              "range": [
+                10368.975066500383,
+                10372.38605392113
+              ]
+            },
+            "p50_ms": 1.7059499999999999,
+            "p99_ms": 2.1425099999999997,
+            "server_cpu": 0.657,
+            "client_cpu": 0.202,
+            "server_cpu_seconds_per_million": 63.34125982050492,
+            "response_mib_per_second": 2592.4223252001325
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 7847.143134529267,
+              "range": [
+                7845.7309204898065,
+                7889.493792753423
+              ]
+            },
+            "p50_ms": 1.64873,
+            "p99_ms": 3.38552,
+            "server_cpu": 0.994,
+            "client_cpu": 0.093,
+            "server_cpu_seconds_per_million": 126.67030318666768,
+            "response_mib_per_second": 1961.7857836323167
+          },
+          "axum": {
+            "rps": {
+              "median": 10378.111821411821,
+              "range": [
+                10377.85904488523,
+                10378.646343646382
+              ]
+            },
+            "p50_ms": 1.3014700000000001,
+            "p99_ms": 2.676561,
+            "server_cpu": 0.584,
+            "client_cpu": 0.204,
+            "server_cpu_seconds_per_million": 56.27227862346867,
+            "response_mib_per_second": 2594.5279553529554
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0001921400507434,
+            "range": [
+              0.9998022836755295,
+              1.0003087772840187
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.3217774408650034,
+            "range": [
+              1.314448751249391,
+              1.3219522614957941
+            ]
+          },
+          "main_axum": {
+            "median": 0.9993289481126152,
+            "range": [
+              0.9992506770334447,
+              0.9994524617841524
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.3213694320006049,
+            "range": [
+              1.3147086906194498,
+              1.3216983103153828
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.999143948829289,
+            "range": [
+              0.9991369738837537,
+              0.9994482842747099
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.2429253539073333,
+          "range": [
+            1.1457553930053792,
+            1.2514096419509446
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 10372.288780971596,
+              "range": [
+                10363.364828218837,
+                10373.317950891418
+              ]
+            },
+            "p50_ms": 1.6959099999999998,
+            "p99_ms": 2.1255900000000003,
+            "server_cpu": 0.633,
+            "client_cpu": 0.199,
+            "server_cpu_seconds_per_million": 61.0805477267748,
+            "response_mib_per_second": 2593.072195242899
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 10371.755890948865,
+              "range": [
+                10370.06140689198,
+                10372.753108475106
+              ]
+            },
+            "p50_ms": 1.41147,
+            "p99_ms": 2.601121,
+            "server_cpu": 0.665,
+            "client_cpu": 0.201,
+            "server_cpu_seconds_per_million": 64.12691052707157,
+            "response_mib_per_second": 2592.9389727372163
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 7684.548803232707,
+              "range": [
+                7557.411215636657,
+                7705.868052774043
+              ]
+            },
+            "p50_ms": 1.67726,
+            "p99_ms": 3.43934,
+            "server_cpu": 0.994,
+            "client_cpu": 0.087,
+            "server_cpu_seconds_per_million": 129.35047007338255,
+            "response_mib_per_second": 1921.1372008081767
+          },
+          "axum": {
+            "rps": {
+              "median": 10377.258684490946,
+              "range": [
+                10372.052815037328,
+                10377.866267181378
+              ]
+            },
+            "p50_ms": 1.2532,
+            "p99_ms": 2.743521,
+            "server_cpu": 0.554,
+            "client_cpu": 0.197,
+            "server_cpu_seconds_per_million": 53.385967994415125,
+            "response_mib_per_second": 2594.3146711227364
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9999552358473537,
+            "range": [
+              0.9993542392459998,
+              1.0001506070870716
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.3497589834562858,
+            "range": [
+              1.344866633745191,
+              1.3726020266607315
+            ]
+          },
+          "main_axum": {
+            "median": 0.9995617291480867,
+            "range": [
+              0.9986611246096357,
+              1.000022750167057
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.3498194069782647,
+            "range": [
+              1.3457356570177519,
+              1.3723953341971376
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.999411210736851,
+            "range": [
+              0.9993064374881854,
+              1.0000675173420601
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9296681562400184,
+          "range": [
+            0.656670538660208,
+            1.0311165839651444
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 1.0001100232340037,
+          "range": [
+            0.9991981141126481,
+            1.0001883755006304
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 1.0000358840154855,
+          "range": [
+            1.0000353876679935,
+            1.0002681870127614
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9740230495258188,
+          "range": [
+            0.9630780382203402,
+            0.9821733794934899
+          ]
+        },
+        "axum": {
+          "median": 0.999866296710622,
+          "range": [
+            0.9994161744950568,
+            1.0000006959331513
+          ]
+        }
+      }
+    },
+    "1-core/models256": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 23442.903136772606,
+              "range": [
+                23402.56671018011,
+                23541.045338689535
+              ]
+            },
+            "p50_ms": 2.7289100000000004,
+            "p99_ms": 3.09844,
+            "server_cpu": 0.99,
+            "client_cpu": 0.075,
+            "server_cpu_seconds_per_million": 42.230264495146216,
+            "response_mib_per_second": 332.7823764713862
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 23945.691715450495,
+              "range": [
+                23945.522680911254,
+                24052.29616258915
+              ]
+            },
+            "p50_ms": 2.670459,
+            "p99_ms": 3.2378400000000003,
+            "server_cpu": 0.988,
+            "client_cpu": 0.073,
+            "server_cpu_seconds_per_million": 41.26003173099034,
+            "response_mib_per_second": 339.919682678681
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 3499.6187382716394,
+              "range": [
+                3443.524073634066,
+                3501.2697364162004
+              ]
+            },
+            "p50_ms": 17.942588999999998,
+            "p99_ms": 35.898589,
+            "server_cpu": 0.996,
+            "client_cpu": 0.012,
+            "server_cpu_seconds_per_million": 284.6024308613388,
+            "response_mib_per_second": 49.678635520146706
+          },
+          "axum": {
+            "rps": {
+              "median": 17747.73228466624,
+              "range": [
+                17570.784296541147,
+                17784.2512418551
+              ]
+            },
+            "p50_ms": 3.66418,
+            "p99_ms": 3.787149,
+            "server_cpu": 0.99,
+            "client_cpu": 0.06,
+            "server_cpu_seconds_per_million": 55.78177448931571,
+            "response_mib_per_second": 251.936907822854
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.978744198872172,
+            "range": [
+              0.9773184666484307,
+              0.9790098737523352
+            ]
+          },
+          "main_fastapi": {
+            "median": 6.726745711253042,
+            "range": [
+              6.684022789439327,
+              6.807823216996571
+            ]
+          },
+          "main_axum": {
+            "median": 1.3208956930811326,
+            "range": [
+              1.315915210144037,
+              1.3397834121339507
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 6.872833288825023,
+            "range": [
+              6.839145086822308,
+              6.953784021506998
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.3492159052680668,
+            "range": [
+              1.3464548712118107,
+              1.3688800543367836
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.00218664294715,
+          "range": [
+            0.9381294033202614,
+            1.0424455300308182
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 19642.828830678354,
+              "range": [
+                19602.248146688384,
+                19697.20226051434
+              ]
+            },
+            "p50_ms": 3.25671,
+            "p99_ms": 3.88828,
+            "server_cpu": 0.99,
+            "client_cpu": 0.061,
+            "server_cpu_seconds_per_million": 50.40007264400781,
+            "response_mib_per_second": 278.8386413046334
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 19888.751621970423,
+              "range": [
+                19772.47110097116,
+                19923.0017166036
+              ]
+            },
+            "p50_ms": 3.2147,
+            "p99_ms": 3.612809,
+            "server_cpu": 0.99,
+            "client_cpu": 0.063,
+            "server_cpu_seconds_per_million": 49.776879857375306,
+            "response_mib_per_second": 282.3296240740106
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 2451.4806217356804,
+              "range": [
+                2403.055698253344,
+                2452.743534588678
+              ]
+            },
+            "p50_ms": 25.62652,
+            "p99_ms": 51.298660000000005,
+            "server_cpu": 0.996,
+            "client_cpu": 0.009,
+            "server_cpu_seconds_per_million": 406.28507978774843,
+            "response_mib_per_second": 34.7998514695507
+          },
+          "axum": {
+            "rps": {
+              "median": 17727.975227154606,
+              "range": [
+                17578.144868717845,
+                17786.42803412302
+              ]
+            },
+            "p50_ms": 3.6678800000000003,
+            "p99_ms": 3.79385,
+            "server_cpu": 0.992,
+            "client_cpu": 0.06,
+            "server_cpu_seconds_per_million": 55.95675689350673,
+            "response_mib_per_second": 251.65644765491135
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9876350815794589,
+            "range": [
+              0.983900339191965,
+              0.9961932507033415
+            ]
+          },
+          "main_fastapi": {
+            "median": 8.008513141987523,
+            "range": [
+              7.996085293470415,
+              8.19673146770223
+            ]
+          },
+          "main_axum": {
+            "median": 1.1080131023982194,
+            "range": [
+              1.1020902065935745,
+              1.120550684251532
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 8.12692604622665,
+            "range": [
+              8.10877751444394,
+              8.22805360497584
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.121885120389049,
+            "range": [
+              1.1201238201611698,
+              1.1248326401131412
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.060056614896455,
+          "range": [
+            1.0031326049376499,
+            1.076248426086184
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          },
+          "axum": {
+            "median": 1.0,
+            "range": [
+              1.0,
+              1.0
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.8376110359792891,
+          "range": [
+            0.8367174004861259,
+            0.8379008656085157
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.8305833155951621,
+          "range": [
+            0.8220616845607109,
+            0.8320077763194733
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.7001690261787559,
+          "range": [
+            0.6866621417852345,
+            0.7122771562332119
+          ]
+        },
+        "axum": {
+          "median": 1.000122399995272,
+          "range": [
+            0.9988867841144582,
+            1.000418909711284
+          ]
+        }
+      }
+    },
+    "4-core/json": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 251044.68255368187,
+              "range": [
+                240293.92121155447,
+                251236.52892202497
+              ]
+            },
+            "p50_ms": 0.24112,
+            "p99_ms": 0.45455,
+            "server_cpu": 0.768,
+            "client_cpu": 0.579,
+            "server_cpu_seconds_per_million": 12.227521265243405,
+            "response_mib_per_second": 5.267127052479745
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 249755.393223531,
+              "range": [
+                223721.72390798127,
+                250135.3497840115
+              ]
+            },
+            "p50_ms": 0.24186,
+            "p99_ms": 0.4548,
+            "server_cpu": 0.725,
+            "client_cpu": 0.571,
+            "server_cpu_seconds_per_million": 12.313333571842358,
+            "response_mib_per_second": 5.240076685826952
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 43089.844629455554,
+              "range": [
+                42975.82243699784,
+                43105.665835747175
+              ]
+            },
+            "p50_ms": 1.2692510000000001,
+            "p99_ms": 2.6833299999999998,
+            "server_cpu": 0.982,
+            "client_cpu": 0.16,
+            "server_cpu_seconds_per_million": 91.21770708710929,
+            "response_mib_per_second": 0.904060918663046
+          },
+          "axum": {
+            "rps": {
+              "median": 248065.09768701217,
+              "range": [
+                241119.31806089988,
+                249087.12504297248
+              ]
+            },
+            "p50_ms": 0.24197,
+            "p99_ms": 0.51417,
+            "server_cpu": 0.712,
+            "client_cpu": 0.568,
+            "server_cpu_seconds_per_million": 11.578278080420466,
+            "response_mib_per_second": 5.204612874140041
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0051622081649982,
+            "range": [
+              0.9606555867415183,
+              1.1229867378697689
+            ]
+          },
+          "main_fastapi": {
+            "median": 5.8305276123062075,
+            "range": [
+              5.574532176980797,
+              5.84153294382466
+            ]
+          },
+          "main_axum": {
+            "median": 1.00785892691311,
+            "range": [
+              0.9965768116135061,
+              1.0127846733159303
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 5.802841573939366,
+            "range": [
+              5.191982608241956,
+              5.811532602771479
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.002682869218725,
+            "range": [
+              0.9018669937608662,
+              1.0373924071933316
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.0072237364000975,
+          "range": [
+            0.7266521120823278,
+            1.13603781882146
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 2.0128463677178274,
+            "range": [
+              1.9390711216098644,
+              2.0511200816673414
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 2.059266094263942,
+            "range": [
+              1.8560630885202771,
+              2.0758443495338055
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.812530466765475,
+            "range": [
+              3.8019899287550865,
+              3.8432850207667903
+            ]
+          },
+          "axum": {
+            "median": 1.6102423887844362,
+            "range": [
+              1.597325504813046,
+              1.6313493783166066
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 250766.5785131814,
+              "range": [
+                250485.72752928035,
+                254543.93270803933
+              ]
+            },
+            "p50_ms": 0.24098,
+            "p99_ms": 0.44502,
+            "server_cpu": 0.746,
+            "client_cpu": 0.583,
+            "server_cpu_seconds_per_million": 11.755952557469856,
+            "response_mib_per_second": 5.2612921975040345
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 248778.03695143078,
+              "range": [
+                245635.58751692143,
+                250227.76161806207
+              ]
+            },
+            "p50_ms": 0.24164,
+            "p99_ms": 0.486299,
+            "server_cpu": 0.742,
+            "client_cpu": 0.581,
+            "server_cpu_seconds_per_million": 11.930313609554874,
+            "response_mib_per_second": 5.21957093518398
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 41702.2719672835,
+              "range": [
+                41683.747343266536,
+                41775.1963389355
+              ]
+            },
+            "p50_ms": 1.319149,
+            "p99_ms": 2.83289,
+            "server_cpu": 0.983,
+            "client_cpu": 0.141,
+            "server_cpu_seconds_per_million": 94.28742882605424,
+            "response_mib_per_second": 0.8749484856417055
+          },
+          "axum": {
+            "rps": {
+              "median": 259249.0816592139,
+              "range": [
+                256492.405925655,
+                259546.8431215225
+              ]
+            },
+            "p50_ms": 0.23376000000000002,
+            "p99_ms": 0.435379,
+            "server_cpu": 0.69,
+            "client_cpu": 0.579,
+            "server_cpu_seconds_per_million": 10.682577482602726,
+            "response_mib_per_second": 5.439262196066576
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0172489697468712,
+            "range": [
+              1.006864314063958,
+              1.020888630381811
+            ]
+          },
+          "main_fastapi": {
+            "median": 6.01325939051748,
+            "range": [
+              6.009194074288118,
+              6.093183396263256
+            ]
+          },
+          "main_axum": {
+            "median": 0.9672804891275069,
+            "range": [
+              0.9650887081373606,
+              0.9924033882773884
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 5.968226294597231,
+            "range": [
+              5.890220746477047,
+              5.989864406330598
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.9585091999556717,
+            "range": [
+              0.9474887469025345,
+              0.9755757123296322
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9418074065544039,
+          "range": [
+            0.9085192821999469,
+            0.9682093090232393
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 2.1342947586858805,
+            "range": [
+              2.126084866210416,
+              2.1658505292268577
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 2.141364129093899,
+            "range": [
+              2.0421851739284773,
+              2.197627302826254
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.7819344320678407,
+            "range": [
+              3.7587104604022477,
+              3.783983511698658
+            ]
+          },
+          "axum": {
+            "median": 1.6696795386764949,
+            "range": [
+              1.6672059988180006,
+              1.6740694041737219
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 1.0131645019942177,
+          "range": [
+            0.9977734839124426,
+            1.0435826975931148
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.9960867460778896,
+          "range": [
+            0.9820106903283541,
+            1.1184777108233932
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9694905307311927,
+          "range": [
+            0.9674429372275268,
+            0.9699348373000778
+          ]
+        },
+        "axum": {
+          "median": 1.041992206850296,
+          "range": [
+            1.0339721642311637,
+            1.0751900085987094
+          ]
+        }
+      }
+    },
+    "4-core/items": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 245811.81589952152,
+              "range": [
+                244624.30804190537,
+                247124.99836116124
+              ]
+            },
+            "p50_ms": 0.24528,
+            "p99_ms": 0.46676999999999996,
+            "server_cpu": 0.773,
+            "client_cpu": 0.567,
+            "server_cpu_seconds_per_million": 12.578728116405484,
+            "response_mib_per_second": 4.219639478865993
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 245155.33042729783,
+              "range": [
+                225555.31186613935,
+                252850.068992257
+              ]
+            },
+            "p50_ms": 0.24700999999999998,
+            "p99_ms": 0.45594,
+            "server_cpu": 0.743,
+            "client_cpu": 0.585,
+            "server_cpu_seconds_per_million": 12.718999891190393,
+            "response_mib_per_second": 4.208370158854828
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 33653.48742871738,
+              "range": [
+                33591.96299246443,
+                33762.801265044654
+              ]
+            },
+            "p50_ms": 1.66268,
+            "p99_ms": 3.40695,
+            "server_cpu": 0.983,
+            "client_cpu": 0.128,
+            "server_cpu_seconds_per_million": 116.93273182282186,
+            "response_mib_per_second": 0.5777003991288308
+          },
+          "axum": {
+            "rps": {
+              "median": 251173.36380040503,
+              "range": [
+                235488.49200703015,
+                258902.25729548995
+              ]
+            },
+            "p50_ms": 0.23961,
+            "p99_ms": 0.46392,
+            "server_cpu": 0.75,
+            "client_cpu": 0.584,
+            "server_cpu_seconds_per_million": 11.943941644958622,
+            "response_mib_per_second": 4.311676548392573
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0080343671517578,
+            "range": [
+              0.9674678318928854,
+              1.0898072577665732
+            ]
+          },
+          "main_fastapi": {
+            "median": 7.317578194363445,
+            "range": [
+              7.245379496847915,
+              7.343221081755799
+            ]
+          },
+          "main_axum": {
+            "median": 0.9786539949150657,
+            "range": [
+              0.9545107908391579,
+              1.03879516980644
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 7.28469318214256,
+            "range": [
+              6.714561811012277,
+              7.489013337706609
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.9469030242849428,
+            "range": [
+              0.8980064942132038,
+              1.073725797966843
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9999780672895556,
+          "range": [
+            0.8223308604834023,
+            1.1015221238938053
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 2.1071057337321037,
+            "range": [
+              2.0637048244082155,
+              2.107160568830516
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 2.062964789464348,
+            "range": [
+              1.8899036149491715,
+              2.1075453587206376
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.8362052160360625,
+            "range": [
+              3.7847190019004,
+              3.8501060417680355
+            ]
+          },
+          "axum": {
+            "median": 1.709953541502008,
+            "range": [
+              1.6610094942572315,
+              1.7470408354318465
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 247246.97945107133,
+              "range": [
+                246035.37781599676,
+                250615.09095716642
+              ]
+            },
+            "p50_ms": 0.24321,
+            "p99_ms": 0.45593,
+            "server_cpu": 0.766,
+            "client_cpu": 0.578,
+            "server_cpu_seconds_per_million": 12.392466863710855,
+            "response_mib_per_second": 4.24427569400719
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 247710.9027164884,
+              "range": [
+                247512.88039488363,
+                247868.1892144279
+              ]
+            },
+            "p50_ms": 0.24484000000000003,
+            "p99_ms": 0.44699,
+            "server_cpu": 0.77,
+            "client_cpu": 0.585,
+            "server_cpu_seconds_per_million": 12.443796844374921,
+            "response_mib_per_second": 4.2522394646613995
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 32224.8295098164,
+              "range": [
+                32196.570893947817,
+                32301.98910255404
+              ]
+            },
+            "p50_ms": 1.73119,
+            "p99_ms": 3.57502,
+            "server_cpu": 0.986,
+            "client_cpu": 0.113,
+            "server_cpu_seconds_per_million": 122.39009670473415,
+            "response_mib_per_second": 0.553175860573478
+          },
+          "axum": {
+            "rps": {
+              "median": 254943.02007087856,
+              "range": [
+                254907.9085926627,
+                255660.0413969145
+              ]
+            },
+            "p50_ms": 0.23614,
+            "p99_ms": 0.45249,
+            "server_cpu": 0.727,
+            "client_cpu": 0.567,
+            "server_cpu_seconds_per_million": 11.408041500379342,
+            "response_mib_per_second": 4.37638698699552
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9989257086605429,
+            "range": [
+              0.9932359662731143,
+              1.011082106790082
+            ]
+          },
+          "main_fastapi": {
+            "median": 7.672561289292605,
+            "range": [
+              7.616725305518209,
+              7.783906298054743
+            ]
+          },
+          "main_axum": {
+            "median": 0.967092777190074,
+            "range": [
+              0.9650602622797623,
+              0.9831593391542979
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 7.6808127198775615,
+            "range": [
+              7.66859594714254,
+              7.69858970481298
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.9716324167165686,
+            "range": [
+              0.9681328339089865,
+              0.9723832837627486
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.0067809123246605,
+          "range": [
+            0.9881313131313131,
+            1.0328009967153697
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 2.2215910271134356,
+            "range": [
+              2.1732603401557733,
+              2.222220324934935
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 2.186043191787159,
+            "range": [
+              2.17360104878183,
+              2.247058399414745
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.8051003138686923,
+            "range": [
+              3.795265166181961,
+              3.8185275043651354
+            ]
+          },
+          "axum": {
+            "median": 1.7797255530220355,
+            "range": [
+              1.7656393591263075,
+              1.8044039418170728
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 1.0057683138089843,
+          "range": [
+            1.0004936007717513,
+            1.0195404563448989
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 1.0096165560156358,
+          "range": [
+            0.9796750449930628,
+            1.0989241936431566
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9575479979028304,
+          "range": [
+            0.9567330876658322,
+            0.9584605371579613
+          ]
+        },
+        "axum": {
+          "median": 1.01486839502307,
+          "range": [
+            0.9874770659304254,
+            1.0826134980017097
+          ]
+        }
+      }
+    },
+    "4-core/echo": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 146892.31915191564,
+              "range": [
+                146078.61245229718,
+                147229.76138873823
+              ]
+            },
+            "p50_ms": 0.42094000000000004,
+            "p99_ms": 0.67873,
+            "server_cpu": 0.946,
+            "client_cpu": 0.494,
+            "server_cpu_seconds_per_million": 25.728493779177914,
+            "response_mib_per_second": 158.71906051551858
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 145245.5032281506,
+              "range": [
+                141917.31989466312,
+                147395.82092258037
+              ]
+            },
+            "p50_ms": 0.42534,
+            "p99_ms": 0.674341,
+            "server_cpu": 0.94,
+            "client_cpu": 0.509,
+            "server_cpu_seconds_per_million": 25.95877658015538,
+            "response_mib_per_second": 156.93965450047935
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 25563.643809856574,
+              "range": [
+                25516.179260412813,
+                25585.27874161032
+              ]
+            },
+            "p50_ms": 2.19995,
+            "p99_ms": 4.54051,
+            "server_cpu": 0.988,
+            "client_cpu": 0.108,
+            "server_cpu_seconds_per_million": 154.46382429176785,
+            "response_mib_per_second": 27.621849476401806
+          },
+          "axum": {
+            "rps": {
+              "median": 86201.73773554649,
+              "range": [
+                81854.9581916937,
+                98682.67956033982
+              ]
+            },
+            "p50_ms": 0.733349,
+            "p99_ms": 1.31094,
+            "server_cpu": 0.916,
+            "client_cpu": 0.305,
+            "server_cpu_seconds_per_million": 42.504943592211355,
+            "response_mib_per_second": 93.14209828793923
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0057358693083802,
+            "range": [
+              0.9988733769193541,
+              1.0350556173196137
+            ]
+          },
+          "main_fastapi": {
+            "median": 5.7461416785692485,
+            "range": [
+              5.7249406724043315,
+              5.754471658317047
+            ]
+          },
+          "main_axum": {
+            "median": 1.704052876550568,
+            "range": [
+              1.4802862376976396,
+              1.798666380647892
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 5.692290438384416,
+            "range": [
+              5.551529388777669,
+              5.760962091175692
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.6463394314630102,
+            "range": [
+              1.4718439332541613,
+              1.800695085292188
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.007131406810501,
+          "range": [
+            0.8430884184308842,
+            1.0880745122557272
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.2769777578138473,
+            "range": [
+              3.2540689107177814,
+              3.321486168135532
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.317706458030458,
+            "range": [
+              3.2269165491747525,
+              3.3532878611357733
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.8219023967837753,
+            "range": [
+              3.7937134480279044,
+              3.846924212854205
+            ]
+          },
+          "axum": {
+            "median": 2.2787162723557,
+            "range": [
+              2.190883186989015,
+              2.599279165747557
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 138146.08896051336,
+              "range": [
+                137945.44166945977,
+                138242.8094674249
+              ]
+            },
+            "p50_ms": 0.45105,
+            "p99_ms": 0.70872,
+            "server_cpu": 0.95,
+            "client_cpu": 0.479,
+            "server_cpu_seconds_per_million": 27.4878672868365,
+            "response_mib_per_second": 149.2686450884453
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 129974.72713550214,
+              "range": [
+                129559.9748650476,
+                130068.7763184858
+              ]
+            },
+            "p50_ms": 0.48207,
+            "p99_ms": 0.70189,
+            "server_cpu": 0.952,
+            "client_cpu": 0.448,
+            "server_cpu_seconds_per_million": 29.276818832182666,
+            "response_mib_per_second": 140.43938240482703
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 23079.63023113046,
+              "range": [
+                22978.71040052512,
+                23114.626351861247
+              ]
+            },
+            "p50_ms": 2.4618,
+            "p99_ms": 5.10409,
+            "server_cpu": 0.989,
+            "client_cpu": 0.094,
+            "server_cpu_seconds_per_million": 171.5798719625343,
+            "response_mib_per_second": 24.937840511198818
+          },
+          "axum": {
+            "rps": {
+              "median": 90638.79655044033,
+              "range": [
+                85914.09971739308,
+                96042.36739974275
+              ]
+            },
+            "p50_ms": 0.69749,
+            "p99_ms": 1.2310800000000002,
+            "server_cpu": 0.917,
+            "client_cpu": 0.324,
+            "server_cpu_seconds_per_million": 40.468321950399734,
+            "response_mib_per_second": 97.93639802136315
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0628688515459805,
+            "range": [
+              1.0605576955047782,
+              1.0670178781017945
+            ]
+          },
+          "main_fastapi": {
+            "median": 5.980750342360315,
+            "range": [
+              5.976934651379079,
+              6.011916532851051
+            ]
+          },
+          "main_axum": {
+            "median": 1.5241386053006045,
+            "range": [
+              1.436297806938787,
+              1.6090817446980477
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 5.635652521982148,
+            "range": [
+              5.605107904096192,
+              5.656310770709391
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.433985578826297,
+            "range": [
+              1.3542854038272507,
+              1.5080176046914744
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.0097308695094673,
+          "range": [
+            0.9730187859854587,
+            1.0154834550923937
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.3501380563907865,
+            "range": [
+              3.300170047612924,
+              3.3962447496728068
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.375385230438149,
+            "range": [
+              3.3607000146900576,
+              3.404620231210412
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.807993434648393,
+            "range": [
+              3.7709125950494937,
+              3.8215992533398775
+            ]
+          },
+          "axum": {
+            "median": 2.3958873927349917,
+            "range": [
+              2.254636958623306,
+              2.5438027237245313
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.9390922715761398,
+          "range": [
+            0.9389596788275393,
+            0.9456968863640169
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.8948623141285054,
+          "range": [
+            0.8789935430604844,
+            0.9165109404195922
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9028302225925886,
+          "range": [
+            0.90055451351118,
+            0.9034346111801019
+          ]
+        },
+        "axum": {
+          "median": 1.0495894398503436,
+          "range": [
+            0.9184873875969183,
+            1.114158135586382
+          ]
+        }
+      }
+    },
+    "4-core/cpu-inline": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 1771.4423170909895,
+              "range": [
+                1688.1663321655592,
+                1773.2660591347098
+              ]
+            },
+            "p50_ms": 8.95552,
+            "p99_ms": 18.104821,
+            "server_cpu": 0.995,
+            "client_cpu": 0.007,
+            "server_cpu_seconds_per_million": 2249.0148065009575,
+            "response_mib_per_second": 0.032098201775292205
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 1737.4779299208508,
+              "range": [
+                1735.930957429268,
+                1744.647356312094
+              ]
+            },
+            "p50_ms": 8.84953,
+            "p99_ms": 17.958080000000002,
+            "server_cpu": 0.973,
+            "client_cpu": 0.007,
+            "server_cpu_seconds_per_million": 2237.7262657817555,
+            "response_mib_per_second": 0.03148277346467606
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 1718.5427425171877,
+              "range": [
+                1715.8163425832759,
+                1720.9246611266838
+              ]
+            },
+            "p50_ms": 7.01702,
+            "p99_ms": 14.16505,
+            "server_cpu": 0.996,
+            "client_cpu": 0.008,
+            "server_cpu_seconds_per_million": 2317.3588536926827,
+            "response_mib_per_second": 0.03113967142851502
+          },
+          "axum": {
+            "rps": {
+              "median": 17868.681980407346,
+              "range": [
+                17855.317046003347,
+                17888.852378015334
+              ]
+            },
+            "p50_ms": 0.89938,
+            "p99_ms": 1.3523800000000001,
+            "server_cpu": 0.99,
+            "client_cpu": 0.066,
+            "server_cpu_seconds_per_million": 221.6167932442953,
+            "response_mib_per_second": 0.3237771583821674
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0164037177593936,
+            "range": [
+              0.9716188638105245,
+              1.0204566659231138
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0318428603861012,
+            "range": [
+              0.980964693166941,
+              1.0324195388091275
+            ]
+          },
+          "main_axum": {
+            "median": 0.09913670851791648,
+            "range": [
+              0.09436973912536986,
+              0.09931305361680093
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.0117230582008025,
+            "range": [
+              1.0096188224668299,
+              1.015189970635627
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.09714935658559941,
+            "range": [
+              0.0971262936942864,
+              0.0977102423786201
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.7596424562091268,
+          "range": [
+            0.7355574975603058,
+            1.2944215964742316
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.943067341657949,
+            "range": [
+              3.7825634099030108,
+              3.9940078691493133
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.9077324763162906,
+            "range": [
+              3.896653254415524,
+              3.950149939101648
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9643290078936992,
+            "range": [
+              3.9640932012794874,
+              3.9776284513013445
+            ]
+          },
+          "axum": {
+            "median": 3.9177526386514328,
+            "range": [
+              3.9108088855921803,
+              3.9258966261428836
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 1559.1132344997272,
+              "range": [
+                1557.3271848180982,
+                1592.82954846444
+              ]
+            },
+            "p50_ms": 12.141659,
+            "p99_ms": 19.814888999999997,
+            "server_cpu": 0.957,
+            "client_cpu": 0.006,
+            "server_cpu_seconds_per_million": 2455.241810084622,
+            "response_mib_per_second": 0.028250838714117828
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 1551.9049604418142,
+              "range": [
+                1548.7113722006263,
+                1590.485761849383
+              ]
+            },
+            "p50_ms": 4.874309,
+            "p99_ms": 29.555418,
+            "server_cpu": 0.952,
+            "client_cpu": 0.005,
+            "server_cpu_seconds_per_million": 2453.6528033628547,
+            "response_mib_per_second": 0.028120226143259496
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 1566.4438532119516,
+              "range": [
+                1565.841310986719,
+                1567.089532253787
+              ]
+            },
+            "p50_ms": 7.680499,
+            "p99_ms": 15.451709,
+            "server_cpu": 0.997,
+            "client_cpu": 0.006,
+            "server_cpu_seconds_per_million": 2544.8450250729843,
+            "response_mib_per_second": 0.028383668147112923
+          },
+          "axum": {
+            "rps": {
+              "median": 17856.05719951023,
+              "range": [
+                17855.34964692181,
+                17894.523579524513
+              ]
+            },
+            "p50_ms": 0.9007000000000001,
+            "p99_ms": 1.35121,
+            "server_cpu": 0.991,
+            "client_cpu": 0.067,
+            "server_cpu_seconds_per_million": 222.00629382149216,
+            "response_mib_per_second": 0.32354839972562255
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0034939152296674,
+            "range": [
+              0.9802748769576055,
+              1.0284870228602534
+            ]
+          },
+          "main_fastapi": {
+            "median": 0.9957032194515598,
+            "range": [
+              0.9941800222362519,
+              1.016425364142171
+            ]
+          },
+          "main_axum": {
+            "median": 0.08731564964646797,
+            "range": [
+              0.08721908087006154,
+              0.08901212381462933
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 0.9907185356562089,
+            "range": [
+              0.9882724249796186,
+              1.0157387921047594
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.08691540581000923,
+            "range": [
+              0.08654666693516845,
+              0.08907261799615024
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.7289387014176882,
+          "range": [
+            0.6704316954678157,
+            0.9194291984230297
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.81806566228003,
+            "range": [
+              3.8127166874595604,
+              4.482804851858373
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.810454341226245,
+            "range": [
+              3.8016823349520634,
+              3.91203104593273
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9873580172649863,
+            "range": [
+              3.982060650909589,
+              4.049776459813531
+            ]
+          },
+          "axum": {
+            "median": 3.917241131151966,
+            "range": [
+              3.9064124100347195,
+              3.918846388664205
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.8982462277779588,
+          "range": [
+            0.880137738303586,
+            0.9224962938458664
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.8931940565786121,
+          "range": [
+            0.887693072526906,
+            0.9162148730873064
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9118711414523425,
+          "range": [
+            0.9102338345168497,
+            0.9125926080347507
+          ]
+        },
+        "axum": {
+          "median": 0.9992934688237801,
+          "range": [
+            0.9981271727003184,
+            1.002195790386704
+          ]
+        }
+      }
+    },
+    "4-core/cpu-sync": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 1435.3297035202427,
+              "range": [
+                1196.6502053981121,
+                1503.412246057617
+              ]
+            },
+            "p50_ms": 9.65854,
+            "p99_ms": 34.28004,
+            "server_cpu": 0.83,
+            "client_cpu": 0.005,
+            "server_cpu_seconds_per_million": 2313.0574054570716,
+            "response_mib_per_second": 0.026007904402622805
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 1247.9781213136919,
+              "range": [
+                1239.4664315085092,
+                1560.49947239453
+              ]
+            },
+            "p50_ms": 9.336851,
+            "p99_ms": 34.46164,
+            "server_cpu": 0.724,
+            "client_cpu": 0.005,
+            "server_cpu_seconds_per_million": 2317.348317737909,
+            "response_mib_per_second": 0.022613128952942034
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 1467.7794474834238,
+              "range": [
+                1426.181555764412,
+                1543.4667740950395
+              ]
+            },
+            "p50_ms": 9.700600999999999,
+            "p99_ms": 32.28518,
+            "server_cpu": 0.899,
+            "client_cpu": 0.006,
+            "server_cpu_seconds_per_million": 2449.9593628766975,
+            "response_mib_per_second": 0.026595887663064054
+          },
+          "axum": {
+            "rps": {
+              "median": 15565.452108439316,
+              "range": [
+                15526.00177627422,
+                15609.401308142946
+              ]
+            },
+            "p50_ms": 0.94234,
+            "p99_ms": 2.69037,
+            "server_cpu": 0.894,
+            "client_cpu": 0.062,
+            "server_cpu_seconds_per_million": 229.86147445182607,
+            "response_mib_per_second": 0.28204306608233165
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.158022248148629,
+            "range": [
+              0.7668379429580298,
+              1.2046783676584336
+            ]
+          },
+          "main_fastapi": {
+            "median": 0.9740489858870418,
+            "range": [
+              0.8390588144696104,
+              0.9778919482631959
+            ]
+          },
+          "main_axum": {
+            "median": 0.09244683365382682,
+            "range": [
+              0.07687860250132467,
+              0.09631453611698311
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 0.844450052515473,
+            "range": [
+              0.808555222735781,
+              1.0941800965572896
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.0799504155654362,
+            "range": [
+              0.07983165591302312,
+              0.10025404090565762
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9772599330734115,
+          "range": [
+            0.7127269155703808,
+            2.2450055178344908
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.263225515631126,
+            "range": [
+              2.7162578208950006,
+              3.4473138747086987
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 2.837993533464812,
+            "range": [
+              2.8216658850185006,
+              3.584242838626816
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.4839366669777228,
+            "range": [
+              3.380920996864847,
+              3.672379556163544
+            ]
+          },
+          "axum": {
+            "median": 3.461943941953824,
+            "range": [
+              3.457366139875578,
+              3.469755819244621
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 1563.5460129430244,
+              "range": [
+                1216.2040122265118,
+                1608.0965230044803
+              ]
+            },
+            "p50_ms": 13.9773,
+            "p99_ms": 18.129859000000003,
+            "server_cpu": 0.969,
+            "client_cpu": 0.004,
+            "server_cpu_seconds_per_million": 2478.9804507922986,
+            "response_mib_per_second": 0.028331159826199975
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 1216.0682624561834,
+              "range": [
+                1176.993850650967,
+                1560.5884802120845
+              ]
+            },
+            "p50_ms": 12.34995,
+            "p99_ms": 20.606507999999998,
+            "server_cpu": 0.763,
+            "client_cpu": 0.005,
+            "server_cpu_seconds_per_million": 2509.72753275844,
+            "response_mib_per_second": 0.0220349283091235
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 1470.7810115015595,
+              "range": [
+                1470.3502938539652,
+                1472.136891985672
+              ]
+            },
+            "p50_ms": 10.956479999999999,
+            "p99_ms": 17.277618,
+            "server_cpu": 0.996,
+            "client_cpu": 0.005,
+            "server_cpu_seconds_per_million": 2708.7649139096707,
+            "response_mib_per_second": 0.026650275438813813
+          },
+          "axum": {
+            "rps": {
+              "median": 15560.421730871933,
+              "range": [
+                15542.85484526441,
+                15600.510840313358
+              ]
+            },
+            "p50_ms": 0.9453,
+            "p99_ms": 2.67321,
+            "server_cpu": 0.896,
+            "client_cpu": 0.065,
+            "server_cpu_seconds_per_million": 230.3279475317389,
+            "response_mib_per_second": 0.2819519165864627
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.2857386885379398,
+            "range": [
+              0.779323971468269,
+              1.3662743625339084
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0633833444170517,
+            "range": [
+              0.8261487222061608,
+              1.093362309160309
+            ]
+          },
+          "main_axum": {
+            "median": 0.1005958061442879,
+            "range": [
+              0.07795924278862157,
+              0.10334530456934923
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 0.8270602369648405,
+            "range": [
+              0.80025091529387,
+              1.0600838065453992
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.0782396975692464,
+            "range": [
+              0.07564022820254332,
+              0.10003444734510616
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9774804154105101,
+          "range": [
+            0.7203240407155652,
+            1.0387716959154127
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.8597714432862174,
+            "range": [
+              3.002916333286919,
+              3.978260960973724
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.0044728131341816,
+            "range": [
+              2.898756523090269,
+              3.848863436085418
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9182174447701166,
+            "range": [
+              3.917955818027799,
+              3.919740847114523
+            ]
+          },
+          "axum": {
+            "median": 3.4641176092489188,
+            "range": [
+              3.450246121181055,
+              3.466341770962316
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 1.0696311189571428,
+          "range": [
+            1.0163404533256186,
+            1.0893288204851628
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.9811223858448117,
+          "range": [
+            0.9431205808415913,
+            1.0000570380311746
+          ]
+        },
+        "fastapi-standard": {
+          "median": 1.0017515208943342,
+          "range": [
+            0.9529074653154767,
+            1.0322226409642696
+          ]
+        },
+        "axum": {
+          "median": 1.0010854738543147,
+          "range": [
+            0.9968621745123907,
+            1.0022523426643697
+          ]
+        }
+      }
+    },
+    "4-core/large-echo": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 6519.299697869223,
+              "range": [
+                6510.151403424915,
+                6548.385345510493
+              ]
+            },
+            "p50_ms": 2.32554,
+            "p99_ms": 4.667669999999999,
+            "server_cpu": 0.966,
+            "client_cpu": 0.048,
+            "server_cpu_seconds_per_million": 591.2907985255639,
+            "response_mib_per_second": 375.5428883079478
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 6248.830691102179,
+              "range": [
+                6066.179071487163,
+                6296.47526988934
+              ]
+            },
+            "p50_ms": 2.9116989999999996,
+            "p99_ms": 4.39134,
+            "server_cpu": 0.954,
+            "client_cpu": 0.049,
+            "server_cpu_seconds_per_million": 610.5985260820763,
+            "response_mib_per_second": 359.9625780435991
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 1943.6906607239716,
+              "range": [
+                1941.8522007046026,
+                1955.5174627208107
+              ]
+            },
+            "p50_ms": 7.56996,
+            "p99_ms": 27.47594,
+            "server_cpu": 0.994,
+            "client_cpu": 0.019,
+            "server_cpu_seconds_per_million": 2045.5929949877152,
+            "response_mib_per_second": 111.96589181872373
+          },
+          "axum": {
+            "rps": {
+              "median": 4712.588881084745,
+              "range": [
+                4584.972305040397,
+                4801.177957201693
+              ]
+            },
+            "p50_ms": 3.3744899999999998,
+            "p99_ms": 5.391441,
+            "server_cpu": 0.972,
+            "client_cpu": 0.031,
+            "server_cpu_seconds_per_million": 825.0242272576638,
+            "response_mib_per_second": 271.4676915971392
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.047937713344491,
+            "range": [
+              1.0339358330457367,
+              1.0746962166863587
+            ]
+          },
+          "main_fastapi": {
+            "median": 3.3572584440276607,
+            "range": [
+              3.32911954381988,
+              3.3690470802958936
+            ]
+          },
+          "main_axum": {
+            "median": 1.3833796799114395,
+            "range": [
+              1.3639122323487334,
+              1.4198889263230905
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 3.2149306560822084,
+            "range": [
+              3.123913894829918,
+              3.2198512107014037
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.301520324138169,
+            "range": [
+              1.2872285753241537,
+              1.3732853441595354
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.9306863053191053,
+          "range": [
+            0.8693336108947827,
+            1.2019297125258788
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.7845312990167757,
+            "range": [
+              3.770977958157529,
+              3.7936471551088653
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.7303878029174853,
+            "range": [
+              3.614825816829023,
+              3.7781476707153185
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9647195760950824,
+            "range": [
+              3.903330258482139,
+              3.969585096918143
+            ]
+          },
+          "axum": {
+            "median": 3.4848569537314087,
+            "range": [
+              3.416132831318166,
+              3.562769043796915
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 5702.940924390931,
+              "range": [
+                5368.903616709787,
+                5788.4117271504165
+              ]
+            },
+            "p50_ms": 2.57525,
+            "p99_ms": 5.386389,
+            "server_cpu": 0.943,
+            "client_cpu": 0.04,
+            "server_cpu_seconds_per_million": 667.5478376712553,
+            "response_mib_per_second": 328.51671281431715
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 5193.797381839386,
+              "range": [
+                5169.607598567609,
+                5195.2312294940375
+              ]
+            },
+            "p50_ms": 3.05921,
+            "p99_ms": 4.6535400000000005,
+            "server_cpu": 0.993,
+            "client_cpu": 0.038,
+            "server_cpu_seconds_per_million": 766.0871719058424,
+            "response_mib_per_second": 299.1876061012692
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 1782.537844092258,
+              "range": [
+                1771.9918562471373,
+                1782.9147184749459
+              ]
+            },
+            "p50_ms": 6.808839,
+            "p99_ms": 13.764469,
+            "server_cpu": 0.996,
+            "client_cpu": 0.014,
+            "server_cpu_seconds_per_million": 2237.2596538228645,
+            "response_mib_per_second": 102.68271770163027
+          },
+          "axum": {
+            "rps": {
+              "median": 4671.368282215034,
+              "range": [
+                4610.2739862871595,
+                4721.699678022004
+              ]
+            },
+            "p50_ms": 3.402469,
+            "p99_ms": 5.50352,
+            "server_cpu": 0.97,
+            "client_cpu": 0.031,
+            "server_cpu_seconds_per_million": 830.591759329284,
+            "response_mib_per_second": 269.0931876665446
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0980291499879866,
+            "range": [
+              1.0385514788777002,
+              1.114177881879215
+            ]
+          },
+          "main_fastapi": {
+            "median": 3.1993379233387915,
+            "range": [
+              3.029869238835256,
+              3.2466004499091565
+            ]
+          },
+          "main_axum": {
+            "median": 1.2370069417465883,
+            "range": [
+              1.1370701194106667,
+              1.2391255361278668
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 2.913897774054998,
+            "range": [
+              2.9137094615145647,
+              2.9173991857480694
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.1121433626360544,
+            "range": [
+              1.0948615861001225,
+              1.1265702206176604
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.129300140261276,
+          "range": [
+            0.8751361685087986,
+            1.2114368846082766
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.7460380029031906,
+            "range": [
+              3.52009442522225,
+              3.8135451734302275
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.898017734680235,
+            "range": [
+              3.8912778947662288,
+              3.9122973892601838
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9506510526561724,
+            "range": [
+              3.926607367896076,
+              4.030724306427558
+            ]
+          },
+          "axum": {
+            "median": 3.454586109511254,
+            "range": [
+              3.419133904905689,
+              3.5069749561170895
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.8760074184128315,
+          "range": [
+            0.8198820523582433,
+            0.8878885762902278
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.8272919933530453,
+          "range": [
+            0.8248737840164131,
+            0.8564256294234969
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.9116635131575509,
+          "range": [
+            0.9115427901176206,
+            0.9181516069183915
+          ]
+        },
+        "axum": {
+          "median": 0.9912530882897168,
+          "range": [
+            0.9834460876292926,
+            1.0055183934740342
+          ]
+        }
+      }
+    },
+    "4-core/bytes": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 10372.942263905969,
+              "range": [
+                10369.753447505345,
+                10373.238738281601
+              ]
+            },
+            "p50_ms": 1.14602,
+            "p99_ms": 3.01504,
+            "server_cpu": 0.201,
+            "client_cpu": 0.241,
+            "server_cpu_seconds_per_million": 77.50713352743949,
+            "response_mib_per_second": 2593.235565976492
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 10372.714066366869,
+              "range": [
+                10371.364844515578,
+                10373.444275743223
+              ]
+            },
+            "p50_ms": 1.2937999999999998,
+            "p99_ms": 3.237691,
+            "server_cpu": 0.201,
+            "client_cpu": 0.243,
+            "server_cpu_seconds_per_million": 77.5211374831885,
+            "response_mib_per_second": 2593.178516591717
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 10369.36063566153,
+              "range": [
+                10337.445386247058,
+                10371.092570551862
+              ]
+            },
+            "p50_ms": 1.28202,
+            "p99_ms": 3.5198,
+            "server_cpu": 0.401,
+            "client_cpu": 0.269,
+            "server_cpu_seconds_per_million": 154.68648997351323,
+            "response_mib_per_second": 2592.3401589153823
+          },
+          "axum": {
+            "rps": {
+              "median": 10375.7966855706,
+              "range": [
+                10370.42923870806,
+                10377.83512886274
+              ]
+            },
+            "p50_ms": 1.45827,
+            "p99_ms": 3.03057,
+            "server_cpu": 0.181,
+            "client_cpu": 0.219,
+            "server_cpu_seconds_per_million": 69.81388940947977,
+            "response_mib_per_second": 2593.94917139265
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0000219997907625,
+            "range": [
+              0.9996442041678956,
+              1.0001806795724686
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0003739963105087,
+            "range": [
+              0.9998708792697194,
+              1.0034338152544084
+            ]
+          },
+          "main_axum": {
+            "median": 0.9997534697945117,
+            "range": [
+              0.999221255564668,
+              1.0002423260542126
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 1.0002267557805855,
+            "range": [
+              1.0001932818159642,
+              1.003411740406071
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.9995769008598618,
+            "range": [
+              0.9995728673961792,
+              1.0002203214164251
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.1173363980688706,
+          "range": [
+            0.8213788238388742,
+            1.2168557510301767
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 1.000073802583916,
+            "range": [
+              0.999814081652986,
+              1.0002799788370544
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0003605949327206,
+            "range": [
+              0.9999015453724686,
+              1.0003621106509337
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.3173514499512413,
+            "range": [
+              1.3143252163004284,
+              1.321877168061787
+            ]
+          },
+          "axum": {
+            "median": 0.9997769212857733,
+            "range": [
+              0.9992840713922752,
+              0.9999218380936413
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 10373.185015379042,
+              "range": [
+                10371.256507380587,
+                10373.458913246659
+              ]
+            },
+            "p50_ms": 1.287909,
+            "p99_ms": 3.1455699999999998,
+            "server_cpu": 0.206,
+            "client_cpu": 0.224,
+            "server_cpu_seconds_per_million": 79.43348567639013,
+            "response_mib_per_second": 2593.2962538447605
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 10372.410928440275,
+              "range": [
+                10337.187781298864,
+                10372.956932904295
+              ]
+            },
+            "p50_ms": 1.343169,
+            "p99_ms": 2.99,
+            "server_cpu": 0.19,
+            "client_cpu": 0.24,
+            "server_cpu_seconds_per_million": 73.26744002852134,
+            "response_mib_per_second": 2593.1027321100687
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 10372.825257837338,
+              "range": [
+                10367.675058753375,
+                10375.030550264144
+              ]
+            },
+            "p50_ms": 1.37057,
+            "p99_ms": 2.9122000000000003,
+            "server_cpu": 0.401,
+            "client_cpu": 0.248,
+            "server_cpu_seconds_per_million": 154.7116389074859,
+            "response_mib_per_second": 2593.2063144593344
+          },
+          "axum": {
+            "rps": {
+              "median": 10378.18271281515,
+              "range": [
+                10368.383689374967,
+                10378.623012411295
+              ]
+            },
+            "p50_ms": 1.35193,
+            "p99_ms": 3.34084,
+            "server_cpu": 0.158,
+            "client_cpu": 0.211,
+            "server_cpu_seconds_per_million": 60.95453437430599,
+            "response_mib_per_second": 2594.5456782037877
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0001010357971367,
+            "range": [
+              1.0000219881829475,
+              1.0032957441426533
+            ]
+          },
+          "main_fastapi": {
+            "median": 1.0000346826956747,
+            "range": [
+              0.9998485173600337,
+              1.0003454437573436
+            ]
+          },
+          "main_axum": {
+            "median": 0.9995448336477388,
+            "range": [
+              0.9992902232770283,
+              1.0004630737198696
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 0.9997475070737211,
+            "range": [
+              0.9970593911092178,
+              1.000012694233604
+            ]
+          },
+          "rc10_axum": {
+            "median": 0.9994438540412525,
+            "range": [
+              0.9960076369415403,
+              1.000441075838466
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.011638795986622,
+          "range": [
+            0.9516405856789263,
+            1.1194677352769513
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 0.999987184860909,
+            "range": [
+              0.9999004777428775,
+              1.0009740161805687
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 1.0001157992887664,
+            "range": [
+              0.9965712741058896,
+              1.0002265677565547
+            ]
+          },
+          "fastapi-standard": {
+            "median": 1.3491585939817237,
+            "range": [
+              1.3463805088810503,
+              1.3725368332975516
+            ]
+          },
+          "axum": {
+            "median": 1.0000890435858159,
+            "range": [
+              0.999086269030427,
+              1.0006334519782276
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 1.0000234023738779,
+          "range": [
+            0.9998089091602896,
+            1.0003573340253529
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.9999003853228031,
+          "range": [
+            0.996704670626375,
+            1.0000234139817095
+          ]
+        },
+        "fastapi-standard": {
+          "median": 1.0003797073148748,
+          "range": [
+            0.9998374463993125,
+            1.0034224965906324
+          ]
+        },
+        "axum": {
+          "median": 1.0000334929152463,
+          "range": [
+            0.9998027517197207,
+            1.0002723961278681
+          ]
+        }
+      }
+    },
+    "4-core/models256": {
+      "standard": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 84649.51628261294,
+              "range": [
+                84628.60418522244,
+                84831.88611310875
+              ]
+            },
+            "p50_ms": 0.7628,
+            "p99_ms": 0.95098,
+            "server_cpu": 0.965,
+            "client_cpu": 0.283,
+            "server_cpu_seconds_per_million": 45.55253437156409,
+            "response_mib_per_second": 1201.6373156229913
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 85690.96095155361,
+              "range": [
+                85619.94204385816,
+                85936.52097082272
+              ]
+            },
+            "p50_ms": 0.7474,
+            "p99_ms": 1.05842,
+            "server_cpu": 0.968,
+            "client_cpu": 0.324,
+            "server_cpu_seconds_per_million": 45.05651329909698,
+            "response_mib_per_second": 1216.4210832251315
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 13632.26407167653,
+              "range": [
+                13560.089393530281,
+                13674.812039798388
+              ]
+            },
+            "p50_ms": 4.39297,
+            "p99_ms": 8.895121000000001,
+            "server_cpu": 0.993,
+            "client_cpu": 0.061,
+            "server_cpu_seconds_per_million": 291.3675952223183,
+            "response_mib_per_second": 193.51601668062702
+          },
+          "axum": {
+            "rps": {
+              "median": 58406.88860309868,
+              "range": [
+                57632.43225776927,
+                61624.76177703554
+              ]
+            },
+            "p50_ms": 1.0921500000000002,
+            "p99_ms": 1.8089410000000001,
+            "server_cpu": 0.968,
+            "client_cpu": 0.208,
+            "server_cpu_seconds_per_million": 66.29355017200108,
+            "response_mib_per_second": 829.1116112300147
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 0.9884216476328854,
+            "range": [
+              0.9850237748320444,
+              0.9899747321198725
+            ]
+          },
+          "main_fastapi": {
+            "median": 6.207963969906769,
+            "range": [
+              6.190177681145002,
+              6.255997556593048
+            ]
+          },
+          "main_axum": {
+            "median": 1.4489490231248616,
+            "range": [
+              1.373628292290739,
+              1.471947006048366
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 6.284292663088751,
+            "range": [
+              6.2806839416901346,
+              6.319350740596005
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.465921984402979,
+            "range": [
+              1.3945128304389964,
+              1.4868531067418527
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 0.8670021698302426,
+          "range": [
+            0.862274083505958,
+            0.9464957200355247
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.6162103598836888,
+            "range": [
+              3.5958265686482527,
+              3.6186595840188924
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.5755885885983214,
+            "range": [
+              3.572902993955648,
+              3.578579682449956
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9075148073278356,
+            "range": [
+              3.8935200935504404,
+              3.9378523580989127
+            ]
+          },
+          "axum": {
+            "median": 3.2841916035035825,
+            "range": [
+              3.2473124641147977,
+              3.507228859964238
+            ]
+          }
+        }
+      },
+      "free-threaded": {
+        "roles": {
+          "bessemer-auto": {
+            "rps": {
+              "median": 72961.3531761268,
+              "range": [
+                72953.96390346586,
+                73260.63702974241
+              ]
+            },
+            "p50_ms": 0.82604,
+            "p99_ms": 1.29372,
+            "server_cpu": 0.971,
+            "client_cpu": 0.249,
+            "server_cpu_seconds_per_million": 53.12939547916547,
+            "response_mib_per_second": 1035.718671824119
+          },
+          "bessemer-rc10": {
+            "rps": {
+              "median": 72806.77793133272,
+              "range": [
+                72488.42930123955,
+                73008.65843263216
+              ]
+            },
+            "p50_ms": 0.8570300000000001,
+            "p99_ms": 1.14029,
+            "server_cpu": 0.968,
+            "client_cpu": 0.251,
+            "server_cpu_seconds_per_million": 53.18186177187863,
+            "response_mib_per_second": 1033.524407871139
+          },
+          "fastapi-standard": {
+            "rps": {
+              "median": 9655.409279539495,
+              "range": [
+                9645.253546202499,
+                9675.048775266476
+              ]
+            },
+            "p50_ms": 6.207899,
+            "p99_ms": 12.50948,
+            "server_cpu": 0.994,
+            "client_cpu": 0.043,
+            "server_cpu_seconds_per_million": 411.7898977545601,
+            "response_mib_per_second": 137.06280434221782
+          },
+          "axum": {
+            "rps": {
+              "median": 57890.41492812148,
+              "range": [
+                52381.602536826394,
+                61113.24995972894
+              ]
+            },
+            "p50_ms": 1.10414,
+            "p99_ms": 1.8175000000000001,
+            "server_cpu": 0.964,
+            "client_cpu": 0.2,
+            "server_cpu_seconds_per_million": 66.60860877897885,
+            "response_mib_per_second": 821.7800390292055
+          }
+        },
+        "ratios": {
+          "main_rc10": {
+            "median": 1.0034513522439639,
+            "range": [
+              1.0021230886627048,
+              1.0064221918823995
+            ]
+          },
+          "main_fastapi": {
+            "median": 7.5557608995468,
+            "range": [
+              7.541187116559756,
+              7.595511790209639
+            ]
+          },
+          "main_axum": {
+            "median": 1.2602079980606073,
+            "range": [
+              1.193871267265368,
+              1.3985948020249517
+            ]
+          },
+          "rc10_fastapi": {
+            "median": 7.5252104276164165,
+            "range": [
+              7.507545998577992,
+              7.569387168819104
+            ]
+          },
+          "rc10_axum": {
+            "median": 1.2521663455209886,
+            "range": [
+              1.1913419426934309,
+              1.3937843612421768
+            ]
+          }
+        },
+        "main_rc10_p99": {
+          "median": 1.1625599827465356,
+          "range": [
+            0.7831459713524886,
+            1.1690710257916845
+          ]
+        },
+        "scaling_over_one_core": {
+          "bessemer-auto": {
+            "median": 3.7193422731208434,
+            "range": [
+              3.714401515436263,
+              3.721714129804583
+            ]
+          },
+          "bessemer-rc10": {
+            "median": 3.6607012503944976,
+            "range": [
+              3.638429104828542,
+              3.6924397592896825
+            ]
+          },
+          "fastapi-standard": {
+            "median": 3.9445823172413212,
+            "range": [
+              3.938603142089428,
+              4.013745313191505
+            ]
+          },
+          "axum": {
+            "median": 3.254752152431028,
+            "range": [
+              2.9799277982994075,
+              3.447277490895829
+            ]
+          }
+        }
+      },
+      "free_over_standard": {
+        "bessemer-auto": {
+          "median": 0.8620485308229251,
+          "range": [
+            0.8600699161497525,
+            0.8654584248910846
+          ]
+        },
+        "bessemer-rc10": {
+          "median": 0.8495649766578305,
+          "range": [
+            0.846630207529315,
+            0.8496436161159971
+          ]
+        },
+        "fastapi-standard": {
+          "median": 0.7082762796240382,
+          "range": [
+            0.7053298808152907,
+            0.7134944685455086
+          ]
+        },
+        "axum": {
+          "median": 0.9911573157322782,
+          "range": [
+            0.8500090065475334,
+            1.060396855825748
+          ]
+        }
+      }
+    }
+  },
+  "pr144_reference_published_wheel_rps": {
+    "1-core/json": {
+      "standard": 123463.28999728229,
+      "free-threaded": 117067.82091565878
+    },
+    "1-core/items": {
+      "standard": 117205.6990065133,
+      "free-threaded": 111129.12830867154
+    },
+    "1-core/echo": {
+      "standard": 43630.734210424285,
+      "free-threaded": 38054.41803676021
+    },
+    "1-core/cpu-inline": {
+      "standard": 444.5400003311076,
+      "free-threaded": 406.43740879649494
+    },
+    "1-core/cpu-sync": {
+      "standard": 439.6791032919646,
+      "free-threaded": 404.45799280730034
+    },
+    "1-core/large-echo": {
+      "standard": 1664.236741987717,
+      "free-threaded": 1341.7392073338413
+    },
+    "1-core/bytes": {
+      "standard": 10363.690226224122,
+      "free-threaded": 10362.937631348002
+    },
+    "1-core/models256": {
+      "standard": 22902.151032152044,
+      "free-threaded": 19834.239389163424
+    },
+    "4-core/json": {
+      "standard": 225743.87693391275,
+      "free-threaded": 227960.4974350805
+    },
+    "4-core/items": {
+      "standard": 227439.3040760887,
+      "free-threaded": 223547.12716063703
+    },
+    "4-core/echo": {
+      "standard": 141264.90487071552,
+      "free-threaded": 126698.75441193256
+    },
+    "4-core/cpu-inline": {
+      "standard": 1719.1532146972702,
+      "free-threaded": 1573.998370342258
+    },
+    "4-core/cpu-sync": {
+      "standard": 1511.5503482765848,
+      "free-threaded": 1603.285662654158
+    },
+    "4-core/large-echo": {
+      "standard": 6182.689359883813,
+      "free-threaded": 5239.202814750594
+    },
+    "4-core/bytes": {
+      "standard": 10365.229911511235,
+      "free-threaded": 10366.389898818295
+    },
+    "4-core/models256": {
+      "standard": 82261.4952788691,
+      "free-threaded": 72131.58089746295
+    }
+  },
+  "native_axum": "0.8.9",
+  "smoke": {
+    "standard": {
+      "settings": {
+        "rounds": 1,
+        "duration": 3,
+        "warmup": 1,
+        "connections": 4,
+        "route_connections": {},
+        "client_cpus": null,
+        "configs": "1-core",
+        "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+        "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+        "check_bodies": true,
+        "large_echo_input": {
+          "bytes": 69403,
+          "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+        }
+      },
+      "planned": 32,
+      "recorded": 32,
+      "eligible": 32,
+      "excluded": {},
+      "missing": [],
+      "totals": {
+        "warmup": {
+          "status_codes": {
+            "200": 299590
+          },
+          "transport_errors": {},
+          "missing": 0
+        },
+        "timed": {
+          "status_codes": {
+            "200": 931604
+          },
+          "transport_errors": {},
+          "missing": 0
+        }
+      }
+    },
+    "free-threaded": {
+      "settings": {
+        "rounds": 1,
+        "duration": 3,
+        "warmup": 1,
+        "connections": 4,
+        "route_connections": {},
+        "client_cpus": null,
+        "configs": "1-core",
+        "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+        "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+        "check_bodies": true,
+        "large_echo_input": {
+          "bytes": 69403,
+          "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+        }
+      },
+      "planned": 32,
+      "recorded": 32,
+      "eligible": 32,
+      "excluded": {},
+      "missing": [],
+      "totals": {
+        "warmup": {
+          "status_codes": {
+            "200": 287410
+          },
+          "transport_errors": {},
+          "missing": 0
+        },
+        "timed": {
+          "status_codes": {
+            "200": 893828
+          },
+          "transport_errors": {},
+          "missing": 0
+        }
+      }
+    }
+  }
+}
