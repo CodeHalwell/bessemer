@@ -1,0 +1,762 @@
+{
+  "study_date": "2026-11-24",
+  "region": "us-central1",
+  "zone": "us-central1-a",
+  "topology": "Two dedicated benchmark VMs with same-zone private HTTP/1.1",
+  "server": {
+    "machine_type": "c3-standard-8",
+    "cpu_platform": "Intel Sapphire Rapids",
+    "provisioning_model": "STANDARD",
+    "threads_per_core": 1
+  },
+  "load_generator": {
+    "machine_type": "e2-highcpu-16",
+    "cpu_platform": "AMD Rome",
+    "provisioning_model": "STANDARD"
+  },
+  "source_commits": {
+    "main": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+    "rc10": "687e70739416d0cca7b4c64de6d4272edf03b101"
+  },
+  "benchmark_source_file_sha256": {
+    "benchmarks/compare/README.md": "1c66c21f625c41e0f0505463a32fb47f47408d9e8c798f98caffcfb04957f117",
+    "benchmarks/compare/axum_app/.gitignore": "b53ee26e6ff1da219b0563333a76d2c9ec19eec713d6ee54e11a1edacb0e9f3d",
+    "benchmarks/compare/axum_app/Cargo.lock": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+    "benchmarks/compare/axum_app/Cargo.toml": "0442d248d378ddc9845cf4c932d09318bd99c6cd6ae59ed6660d6d0e4098dd24",
+    "benchmarks/compare/axum_app/src/main.rs": "87c3780b543365c9614fa09e84796f71da5b83c329089e9522bb0e6f41999752",
+    "benchmarks/compare/bench_parts.py": "38b1baf4b2f4e2497849f2483f472e2e664d0165a5bee4ba0828dc71e62bd701",
+    "benchmarks/compare/bessemer_app.py": "faf7aca3dc6b7a172e86d925fb38863f97eb7a5a64b17515c41cf5fdfb01388f",
+    "benchmarks/compare/cpu_isolation.py": "b2d24799652170bbf098af2b2a280dc4fc88eb989e3d4a60c5032f9f77cfa721",
+    "benchmarks/compare/fastapi_app.py": "b537e24e4f1876c7b4f3f8802159b374bb9d23205100876a8cd3e58e2ecfe7f0",
+    "benchmarks/compare/feature_matrix_app.py": "c1681dafabe2bf7616eadbf60c4d634caa4a76404ae40ecbc9c3bde70c3f3f84",
+    "benchmarks/compare/isolate_cpus.sh": "7967e4d53020d8824166a4ed36b670bf4c390e166557fdcd9050e38f4238dcaf",
+    "benchmarks/compare/matrix.py": "8297ad97e6ee346fdb253dc9952f70ddbf4a0825c0ac6df4c7903c183f6ec1ce",
+    "benchmarks/compare/measurement.py": "398823bfe76dd74eb45a1fbfa9a33f0ac7d2186014bca0392efbdd1aa80bc2a0",
+    "benchmarks/compare/remote/bootstrap.sh": "e14501b954e952a50634622ded69f6d747a468e186afc828209e7f3ac05c5131",
+    "benchmarks/compare/remote/gcp.sh": "c99d68cc670336184fd69eeeed4a6b997b1cf05db3a0ca9ff6763ca7377379e9",
+    "benchmarks/compare/remote/run_two_machines.sh": "9bcdce5a04b0e0619ff0158cffa8045f7f10bdacc7f20e35237bac8b4b83731e",
+    "benchmarks/compare/run_compare.py": "7906f92b10708db22b97b9d0c3489755a862d0bf357e50d7de3bc6c5aa06d96e",
+    "benchmarks/compare/run_concurrency.sh": "2c7cc14a8ff44e4f8e62de88a9324922e2dc2b3301af30eb44ebece3c2699732",
+    "benchmarks/compare/run_matrix.sh": "31a166aba5001b72a94448cb60e32abe83e6593192bdd270176519273b34c8e1",
+    "benchmarks/compare/server_agent.py": "d11c5e80400be99a1d6da8a0b94d68127d9460d8e83d37c6768c052c97332b0c",
+    "benchmarks/compare/servers.py": "17eb58e97ee0df79d6d47459ff5ab62c12f0044b49bc23eff4b81e0fce79a648",
+    "benchmarks/compare/summarise.py": "b9f43d415d8a5c1712ccce76bb5b6bbf8cf6b22316c3720b1ef474d509d8cfcf",
+    "benchmarks/compare/summarise_matrix.py": "773d6dcb856298a2a3d6cda5f112c5ddb3c9ec61f473bdda141ea5675a9bcd81"
+  },
+  "native_axum": "0.8.9",
+  "oha_version": "1.16.0",
+  "series": [
+    {
+      "stage": "smoke",
+      "python_mode": "standard",
+      "started_utc": "2026-11-23T23:05:39Z",
+      "planned": 32,
+      "recorded": 32,
+      "eligible": 32,
+      "runtime": {
+        "mode": "two-machine",
+        "settings": {
+          "rounds": 1,
+          "duration": 3,
+          "warmup": 1,
+          "connections": 4,
+          "route_connections": {},
+          "client_cpus": null,
+          "configs": "1-core",
+          "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+          "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+          "check_bodies": true,
+          "large_echo_input": {
+            "bytes": 69403,
+            "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+          }
+        },
+        "client": {
+          "hostname": "client",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "AMD EPYC 7B12",
+          "cpus": 16,
+          "python": "3.12.3",
+          "oha": "oha 1.16.0"
+        },
+        "server": {
+          "hostname": "server",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+          "cpus": 4,
+          "python": "3.14.7",
+          "versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "gil_enabled": true,
+          "free_threaded": false,
+          "baseline_versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "native_artifacts": {
+            "bessemer-auto": "c54841bf3325e370492bfe5f4aa4c5dfd5a5fdc6f6099089e259b87e55937e9a",
+            "bessemer-rc10": "12cb0bd2c3fd594072393dfea47cd27148a6087497284f7bf845d534bccb8d8b"
+          }
+        }
+      },
+      "source": {
+        "release_commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+        "bundle_sha256": "4c614e1de6d1a51f225142936561472e3badef577c62e328a3d02cba21771a9a",
+        "build_sources": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0"
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016"
+          }
+        }
+      },
+      "build": {
+        "python": "3.14.7",
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "maturin": "maturin 1.16.0",
+        "axum_sha256": "521e32d1da2709aac185a06f755434c0de47a28196397d138a541cbab284ab54",
+        "axum_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "roles": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0",
+            "wheel_sha256": "1e159bc725554446ebc98015125de0da474a520c85d476ee5947a90583a96e8e",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314-manylinux_2_34_x86_64.whl",
+            "native_sha256": "c54841bf3325e370492bfe5f4aa4c5dfd5a5fdc6f6099089e259b87e55937e9a",
+            "python_version": "3.14.7",
+            "gil_enabled": true,
+            "free_threaded": false,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016",
+            "wheel_sha256": "7be9d692a5085836b3e65c27d7317af8c2eb23f677472667edb8a3078de65824",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314-manylinux_2_34_x86_64.whl",
+            "native_sha256": "12cb0bd2c3fd594072393dfea47cd27148a6087497284f7bf845d534bccb8d8b",
+            "python_version": "3.14.7",
+            "gil_enabled": true,
+            "free_threaded": false,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          }
+        }
+      },
+      "python_packages": {
+        "main": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        },
+        "rc10": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        }
+      }
+    },
+    {
+      "stage": "measured",
+      "python_mode": "standard",
+      "started_utc": "2026-11-23T23:09:27Z",
+      "planned": 192,
+      "recorded": 192,
+      "eligible": 192,
+      "runtime": {
+        "mode": "two-machine",
+        "settings": {
+          "rounds": 3,
+          "duration": 5,
+          "warmup": 2,
+          "connections": 64,
+          "route_connections": {
+            "cpu-inline": 16,
+            "cpu-sync": 16,
+            "large-echo": 16,
+            "bytes": 16
+          },
+          "client_cpus": null,
+          "configs": "1-core,4-core",
+          "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+          "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+          "check_bodies": true,
+          "large_echo_input": {
+            "bytes": 69403,
+            "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+          }
+        },
+        "client": {
+          "hostname": "client",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "AMD EPYC 7B12",
+          "cpus": 16,
+          "python": "3.12.3",
+          "oha": "oha 1.16.0"
+        },
+        "server": {
+          "hostname": "server",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+          "cpus": 4,
+          "python": "3.14.7",
+          "versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "gil_enabled": true,
+          "free_threaded": false,
+          "baseline_versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "native_artifacts": {
+            "bessemer-auto": "c54841bf3325e370492bfe5f4aa4c5dfd5a5fdc6f6099089e259b87e55937e9a",
+            "bessemer-rc10": "12cb0bd2c3fd594072393dfea47cd27148a6087497284f7bf845d534bccb8d8b"
+          }
+        }
+      },
+      "source": {
+        "release_commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+        "bundle_sha256": "b996440c3767b0b209e0b463418fc8e9d9ce8b274e389012405cb4cf30ae2426",
+        "build_sources": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0"
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016"
+          }
+        }
+      },
+      "build": {
+        "python": "3.14.7",
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "maturin": "maturin 1.16.0",
+        "axum_sha256": "521e32d1da2709aac185a06f755434c0de47a28196397d138a541cbab284ab54",
+        "axum_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "roles": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0",
+            "wheel_sha256": "1e159bc725554446ebc98015125de0da474a520c85d476ee5947a90583a96e8e",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314-manylinux_2_34_x86_64.whl",
+            "native_sha256": "c54841bf3325e370492bfe5f4aa4c5dfd5a5fdc6f6099089e259b87e55937e9a",
+            "python_version": "3.14.7",
+            "gil_enabled": true,
+            "free_threaded": false,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016",
+            "wheel_sha256": "7be9d692a5085836b3e65c27d7317af8c2eb23f677472667edb8a3078de65824",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314-manylinux_2_34_x86_64.whl",
+            "native_sha256": "12cb0bd2c3fd594072393dfea47cd27148a6087497284f7bf845d534bccb8d8b",
+            "python_version": "3.14.7",
+            "gil_enabled": true,
+            "free_threaded": false,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          }
+        }
+      },
+      "python_packages": {
+        "main": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        },
+        "rc10": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        }
+      }
+    },
+    {
+      "stage": "smoke",
+      "python_mode": "free-threaded",
+      "started_utc": "2026-11-23T23:40:17Z",
+      "planned": 32,
+      "recorded": 32,
+      "eligible": 32,
+      "runtime": {
+        "mode": "two-machine",
+        "settings": {
+          "rounds": 1,
+          "duration": 3,
+          "warmup": 1,
+          "connections": 4,
+          "route_connections": {},
+          "client_cpus": null,
+          "configs": "1-core",
+          "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+          "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+          "check_bodies": true,
+          "large_echo_input": {
+            "bytes": 69403,
+            "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+          }
+        },
+        "client": {
+          "hostname": "client",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "AMD EPYC 7B12",
+          "cpus": 16,
+          "python": "3.12.3",
+          "oha": "oha 1.16.0"
+        },
+        "server": {
+          "hostname": "server",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+          "cpus": 4,
+          "python": "3.14.7",
+          "versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "gil_enabled": false,
+          "free_threaded": true,
+          "baseline_versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "native_artifacts": {
+            "bessemer-auto": "d506491b2f7a5e25e453ed36ac06a8f609d8c57588434c70e2fbc31cc60eaf13",
+            "bessemer-rc10": "ac91a25b12892d6038af3cf2baa0ea3fab2663659438b653995c9fc6b22b87b8"
+          }
+        }
+      },
+      "source": {
+        "release_commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+        "bundle_sha256": "96c2d9da46f98e9f5008ef106b3106c9b4c2530b98d9fb1306ff525d2f47fc4d",
+        "build_sources": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0"
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016"
+          }
+        }
+      },
+      "build": {
+        "python": "3.14.7t",
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "maturin": "maturin 1.16.0",
+        "axum_sha256": "521e32d1da2709aac185a06f755434c0de47a28196397d138a541cbab284ab54",
+        "axum_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "roles": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0",
+            "wheel_sha256": "87b0c5d9815222cab6a35ba8774e4167791f3cad679c070d356c16fce7fc2f4a",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314t-manylinux_2_34_x86_64.whl",
+            "native_sha256": "d506491b2f7a5e25e453ed36ac06a8f609d8c57588434c70e2fbc31cc60eaf13",
+            "python_version": "3.14.7",
+            "gil_enabled": false,
+            "free_threaded": true,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016",
+            "wheel_sha256": "1ff7a2555bf229bbdd552d254418a075850ab84a3d527abac6ee0812b7efa596",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314t-manylinux_2_34_x86_64.whl",
+            "native_sha256": "ac91a25b12892d6038af3cf2baa0ea3fab2663659438b653995c9fc6b22b87b8",
+            "python_version": "3.14.7",
+            "gil_enabled": false,
+            "free_threaded": true,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          }
+        }
+      },
+      "python_packages": {
+        "main": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        },
+        "rc10": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        }
+      }
+    },
+    {
+      "stage": "measured",
+      "python_mode": "free-threaded",
+      "started_utc": "2026-11-23T23:44:11Z",
+      "planned": 192,
+      "recorded": 192,
+      "eligible": 192,
+      "runtime": {
+        "mode": "two-machine",
+        "settings": {
+          "rounds": 3,
+          "duration": 5,
+          "warmup": 2,
+          "connections": 64,
+          "route_connections": {
+            "cpu-inline": 16,
+            "cpu-sync": 16,
+            "large-echo": 16,
+            "bytes": 16
+          },
+          "client_cpus": null,
+          "configs": "1-core,4-core",
+          "frameworks": "bessemer-auto,bessemer-rc10,fastapi-standard,axum",
+          "routes": "json,items,echo,cpu-inline,cpu-sync,large-echo,bytes,models256",
+          "check_bodies": true,
+          "large_echo_input": {
+            "bytes": 69403,
+            "sha256": "4bb4a57404b9fd07a74eaa6cc13e930a4f9b6bc965f252599f07a951c1185ffc"
+          }
+        },
+        "client": {
+          "hostname": "client",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "AMD EPYC 7B12",
+          "cpus": 16,
+          "python": "3.12.3",
+          "oha": "oha 1.16.0"
+        },
+        "server": {
+          "hostname": "server",
+          "kernel": "7.0.0-1017-gcp",
+          "cpu_model": "Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz",
+          "cpus": 4,
+          "python": "3.14.7",
+          "versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "gil_enabled": false,
+          "free_threaded": true,
+          "baseline_versions": {
+            "python": "3.14.7",
+            "bessemer": "1.0.0rc10",
+            "fastapi": "0.165.0",
+            "uvicorn": "0.54.0",
+            "pydantic": "2.14.4",
+            "uvloop": "0.23.0",
+            "httptools": "0.9.0"
+          },
+          "native_artifacts": {
+            "bessemer-auto": "d506491b2f7a5e25e453ed36ac06a8f609d8c57588434c70e2fbc31cc60eaf13",
+            "bessemer-rc10": "ac91a25b12892d6038af3cf2baa0ea3fab2663659438b653995c9fc6b22b87b8"
+          }
+        }
+      },
+      "source": {
+        "release_commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+        "bundle_sha256": "4d7702c23f172a198df78d7a5d0e039ff9b27b515944f52eee8635b2c0d758e8",
+        "build_sources": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0"
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016"
+          }
+        }
+      },
+      "build": {
+        "python": "3.14.7t",
+        "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+        "maturin": "maturin 1.16.0",
+        "axum_sha256": "521e32d1da2709aac185a06f755434c0de47a28196397d138a541cbab284ab54",
+        "axum_lock_sha256": "799be8003a94f1e8db336fb21e68479ed5eb378ccf0c71665f289fee4bd6eb87",
+        "roles": {
+          "main": {
+            "commit": "678e3184f6280eae287a5e19616f7747e9ef20f1",
+            "source_sha256": "7480e2de22146a26c0e9e73455b09881e168f324dd244b0b777c573dcff946f0",
+            "wheel_sha256": "87b0c5d9815222cab6a35ba8774e4167791f3cad679c070d356c16fce7fc2f4a",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314t-manylinux_2_34_x86_64.whl",
+            "native_sha256": "d506491b2f7a5e25e453ed36ac06a8f609d8c57588434c70e2fbc31cc60eaf13",
+            "python_version": "3.14.7",
+            "gil_enabled": false,
+            "free_threaded": true,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          },
+          "rc10": {
+            "commit": "687e70739416d0cca7b4c64de6d4272edf03b101",
+            "source_sha256": "bf463f28adce6dcb84785b2e6dbdf7f64702fe8fea626706c8f9d48d5a093016",
+            "wheel_sha256": "1ff7a2555bf229bbdd552d254418a075850ab84a3d527abac6ee0812b7efa596",
+            "wheel_filename": "bessemer-1.0.0rc10-cp314-cp314t-manylinux_2_34_x86_64.whl",
+            "native_sha256": "ac91a25b12892d6038af3cf2baa0ea3fab2663659438b653995c9fc6b22b87b8",
+            "python_version": "3.14.7",
+            "gil_enabled": false,
+            "free_threaded": true,
+            "versions": {
+              "bessemer": "1.0.0rc10",
+              "fastapi": "0.165.0",
+              "uvicorn": "0.54.0",
+              "uvloop": "0.23.0",
+              "httptools": "0.9.0",
+              "pydantic": "2.14.4",
+              "pydantic-core": "2.50.5"
+            }
+          }
+        }
+      },
+      "python_packages": {
+        "main": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        },
+        "rc10": {
+          "annotated-doc": "0.0.7",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "bessemer": "1.0.0rc10",
+          "click": "8.5.1",
+          "fastapi": "0.165.0",
+          "h11": "0.16.0",
+          "httptools": "0.9.0",
+          "idna": "3.20",
+          "opentelemetry-api": "1.45.2",
+          "pydantic": "2.14.4",
+          "pydantic-core": "2.50.5",
+          "starlette": "1.10.0",
+          "typing-extensions": "4.16.0",
+          "typing-inspection": "0.4.5",
+          "uvicorn": "0.54.0",
+          "uvloop": "0.23.0"
+        }
+      }
+    }
+  ],
+  "cleanup": {
+    "verified_utc": "2026-11-24T00:13:35+00:00",
+    "remaining_resources_by_kind": {
+      "instances": 0,
+      "disks": 0,
+      "firewall-rules": 0,
+      "networks subnets": 0,
+      "networks": 0
+    },
+    "positive_control": {
+      "verified_utc": "2026-11-23T23:00:16+00:00",
+      "resources_by_kind": {
+        "instances": 2,
+        "disks": 2,
+        "firewall-rules": 2,
+        "networks subnets": 1,
+        "networks": 1
+      }
+    }
+  },
+  "redactions": {
+    "hostnames": "stable server and client labels",
+    "http_targets": "192.0.2.1 documentation address; original private paths verified during export",
+    "command_body": "synthetic fixture argument replaced with a label; payload size and digest retained where measured",
+    "worker_pid": "presence recorded as a boolean; numerical PID omitted",
+    "dependency_freeze": "Bessemer local wheel URL replaced with installed version; wheel identities recorded in build receipt"
+  },
+  "same_host_pair_for_all_series": true,
+  "published_artifact_sha256": {
+    "samples.csv": "47086640c7ebbd18d0e2886cab141f79020c2918b2ed47cd41f5f08052ad72ad",
+    "summary.json": "be962bb494923b196245bc09b2fe0204193560a1c227f907943777c18051fc5f",
+    "benchmark-source.patch": "c587d4f48fc9e1a6c24f633602fb9a9e76d50fb29ab3519be92d6ed7add9a3fa",
+    "analyse_main.py": "4c893d657e1f10fb376357e9328df4d8181b44608324d393e64e9dfd3195383d"
+  }
+}

@@ -8,6 +8,33 @@ Intel, and Windows x86_64 (CPython 3.12 and 3.13). Linux is the qualified produc
 the full specification and formal performance targets have not yet been met.
 See the [changelog](CHANGELOG.md) for what is covered.
 
+## Performance
+
+In an eight-workload GCP benchmark, Bessemer at `678e318` was compared with
+RC10, FastAPI on Uvicorn with uvloop and httptools, and native Axum. The
+table shows median successful requests per second over HTTP/1.1 on four
+pinned cores of a C3 server with a separate load generator. The Python
+frameworks used standard CPython 3.14.7.
+
+| Workload | Bessemer | FastAPI | Axum |
+| --- | ---: | ---: | ---: |
+| Small JSON | 251,045 | 43,090 | 248,065 |
+| 20-item typed echo | 146,892 | 25,564 | 86,202 |
+| 1,000-item typed echo | 6,519 | 1,944 | 4,713 |
+| 256-model response | 84,650 | 13,632 | 58,407 |
+
+On one core, the small JSON and path/query routes ran 10.63–13.34×
+FastAPI's throughput across both Python modes.
+
+On free-threaded CPython 3.14.7t, Bessemer gained 6.3% over the matched
+RC10 build on the 20-item echo and 9.8% on the 1,000-item echo at four
+cores. The larger echo's p99 latency rose from 4.65 ms to 5.39 ms.
+Across both Python modes, Bessemer and FastAPI handled inline Python
+checksums at similar rates and Axum ran the native checksum at roughly
+10–11.5× Bessemer's throughput. On four cores, all four builds reached
+about 2.53 GiB/s on the 256 KiB download.
+[GCP benchmark methodology and full results](benchmarks/results/2026-11-24/gcp-main-678e318/report.md)
+
 ## Run an application
 
 Build requirements: CPython 3.12, 3.13, 3.14 or free-threaded 3.14t and Rust 1.92 or newer. Supervised

@@ -1,0 +1,1857 @@
+diff --git a/benchmarks/compare/README.md b/benchmarks/compare/README.md
+index 96513bf..e4250b9 100644
+--- a/benchmarks/compare/README.md
++++ b/benchmarks/compare/README.md
+@@ -1,6 +1,6 @@
+ # Bessemer vs FastAPI vs Axum
+ 
+-Three apps with identical routes (`bessemer_app.py`, `fastapi_app.py` and
++Three apps with matching routes (`bessemer_app.py`, `fastapi_app.py` and
+ `axum_app/`) and a runner, `run_compare.py`. The routes are `GET /json`,
+ `GET /items/{id}?q=`, a 20-item Pydantic `POST /echo` and a 1 ms `GET /io`
+ sleep. Frameworks are interleaved within each round so drift hits all three.
+@@ -38,31 +38,63 @@ hosts you can reach over SSH:
+         10.0.0.2 benchmarks/results/$(date -u +%F)/compare-two-machine \
+         --configs 1-core,2-core,4-core,8-core --connections 256
+ 
+-It ships the current commit (`git archive HEAD`, so commit first), runs
+-`remote/bootstrap.sh` on both hosts in parallel (build tools, Rust, the
+-Bessemer wheel, FastAPI and uvicorn at the versions used in the same-host run,
+-the Axum release binary, and `oha`), starts the agent with a fresh random
+-token, runs the comparison from the client, and copies `raw.json` and
+-`summary.md` back.
++The runner stages the comparison files from the release worktree and starts
++each attempt in its own remote directory. It installs the published Bessemer
++wheel and pinned FastAPI stack, builds Axum with its locked dependency graph,
++and installs the pinned `oha` client. It saves the raw data and Markdown
++summary in the local output directory.
+ 
+ ### Google Cloud
+ 
+-`remote/gcp.sh` creates the two VMs, runs the above through `gcloud compute
+-ssh`, and deletes them:
++The first cloud comparison uses Ubuntu 24.04 on a `c3-standard-8` server with
++one thread per core and a separate `c3-highcpu-22` load generator. There are
++four usable server cores and eight billed server vCPUs. By default both VMs
++use internal addresses in `europe-west2-a` and a compact placement policy.
++The benchmark sends application traffic between the private IPs. [C3
++machine types](https://docs.cloud.google.com/compute/docs/general-purpose-machines#c3_series)
++and [SMT billing](https://docs.cloud.google.com/compute/docs/instances/set-threads-per-core).
+ 
+-    PROJECT=my-project benchmarks/compare/remote/gcp.sh all
++Use a dedicated pair in a subnet with outbound package access, and SSH
++through IAP or an existing private connection. The load generator needs
++TCP access to the benchmark agent on port 9100 and to the server ports
++assigned from the host's ephemeral range. Limit that access to the benchmark
++pair. The IAP path uses TCP 22 from the IAP forwarding range and requires
++the appropriate IAP and SSH access in the project.
+ 
+-- Server: `c3-standard-16` with SMT off, so 8 physical cores and configs up
+-  to `8-core` without two workers sharing a core.
+-- Client: `c3-highcpu-44`, about five times the server's cores.
+-- Both in `europe-west2-a` (override with `ZONE`) in one compact placement
+-  group, talking over the default VPC's internal network.
+-- About US$3 an hour on demand. A default run is three rounds of four
+-  configs, three frameworks and four routes at 13 seconds each, so about 30
+-  minutes plus 10-15 minutes of building.
++Run the short qualification on two existing VMs first.
+ 
+-`gcp.sh up`, `run` and `down` do the steps separately, for example to rerun
+-without rebuilding the VMs. `all` deletes the VMs even if the run fails.
++```sh
++PROJECT=my-project ZONE=europe-west2-a SERVER=bench-server CLIENT=bench-client \
++OUT_DIR="$PWD/gcp-smoke" benchmarks/compare/remote/gcp.sh run \
++  --configs 1-core --connections 64 --rounds 1 --warmup 1 --duration 3
++```
++
++To provision a fresh pair, run the full comparison and clean it up, use
++`all` with the benchmark project and subnet. Use a fresh `PREFIX` for
++each pair. The `up`, `run` and `down` actions are also available for a
++benchmark pair that needs more than one run.
++
++```sh
++PROJECT=my-project SUBNET=bench-subnet PREFIX=bessemer-rc10-bench \
++OUT_DIR="$PWD/gcp-rc10-c256" benchmarks/compare/remote/gcp.sh all
++```
++
++The default matrix tests 1, 2 and 4 cores at 256 connections. Bessemer
++1.0.0rc10 uses release-default admission and loop selection, FastAPI 0.165.0
++uses Uvicorn 0.54.0 with uvloop and httptools, and Axum 0.8.9 runs natively
++with the matching Tokio thread count. Python uses the same Pydantic version
++across both frameworks. The three common routes are small JSON, path and
++query parameters, and a 20-item typed JSON echo. Three rotated rounds of
++3-second warmup and 10-second measurement take about 18 minutes of load, plus
++startup and setup. Each result keeps successful throughput, latency, status and
++error distributions, CPU utilisation and response checks.
++
++Use distinct output directories for a 64- or 1,024-connection follow-up.
++Run the nominal 1 ms `/io` route separately with
++`--routes io --frameworks bessemer-auto,fastapi-standard`. The Python
++baseline starts on CPython 3.13.18. To compare standard and free-threaded
++Python 3.14, run separate passes with `PYTHON_VERSION=3.14.7` and
++`PYTHON_VERSION=3.14.7t`, keeping the same VM pair and connection counts.
+ 
+ ### Why not GitHub Actions
+ 
+diff --git a/benchmarks/compare/axum_app/src/main.rs b/benchmarks/compare/axum_app/src/main.rs
+index a7ce5dc..bf2221e 100644
+--- a/benchmarks/compare/axum_app/src/main.rs
++++ b/benchmarks/compare/axum_app/src/main.rs
+@@ -3,12 +3,14 @@
+ 
+ use axum::{
+     Json, Router,
++    body::Bytes,
+     extract::{Path, Query},
++    http::header,
+     routing::{get, post},
+ };
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+-use std::time::Duration;
++use std::{hint::black_box, sync::LazyLock, time::Duration};
+ 
+ #[derive(Deserialize, Serialize)]
+ struct Item {
+@@ -28,6 +30,27 @@ struct Search {
+     q: Option<String>,
+ }
+ 
++const PAYLOAD: &[u8] = &[b'x'; 262_144];
++static LARGE_ITEMS: LazyLock<Vec<Item>> = LazyLock::new(|| {
++    (0..256)
++        .map(|id| Item {
++            id,
++            name: format!("large-{id}"),
++            price: 1.5,
++            tags: vec!["a".into(), "b".into()],
++        })
++        .collect()
++});
++
++fn cpu_response() -> Json<Value> {
++    let mut value = 0_i64;
++    // Keep the computation in the request path in optimised builds.
++    for index in 0..black_box(50_000_i64) {
++        value = (value + index * index) % 1_000_003;
++    }
++    Json(json!({ "checksum": value }))
++}
++
+ async fn item(Path(item_id): Path<i64>, Query(search): Query<Search>) -> Json<Value> {
+     Json(json!({"id": item_id, "q": search.q.unwrap_or_else(|| "x".into())}))
+ }
+@@ -37,6 +60,7 @@ fn main() {
+     let port: u16 = args.next().unwrap().parse().unwrap();
+     let threads: usize = args.next().unwrap().parse().unwrap();
+     let host = args.next().unwrap_or_else(|| "127.0.0.1".into());
++    LazyLock::force(&LARGE_ITEMS);
+     tokio::runtime::Builder::new_multi_thread()
+         .worker_threads(threads)
+         .enable_all()
+@@ -45,9 +69,26 @@ fn main() {
+         .block_on(async move {
+             let app = Router::new()
+                 .route("/healthz", get(|| async { Json(json!({"ok": true})) }))
+-                .route("/json", get(|| async { Json(json!({"ok": true, "count": 42})) }))
++                .route(
++                    "/json",
++                    get(|| async { Json(json!({"ok": true, "count": 42})) }),
++                )
+                 .route("/items/{item_id}", get(item))
+-                .route("/echo", post(|Json(order): Json<Order>| async { Json(order) }))
++                .route(
++                    "/echo",
++                    post(|Json(order): Json<Order>| async { Json(order) }),
++                )
++                .route("/cpu-inline", get(|| async { cpu_response() }))
++                .route("/models256", get(|| async { Json(LARGE_ITEMS.as_slice()) }))
++                .route(
++                    "/bytes",
++                    get(|| async {
++                        (
++                            [(header::CONTENT_TYPE, "application/octet-stream")],
++                            Bytes::from_static(PAYLOAD),
++                        )
++                    }),
++                )
+                 .route(
+                     "/io",
+                     get(|| async {
+@@ -55,7 +96,21 @@ fn main() {
+                         Json(json!({"ok": true}))
+                     }),
+                 );
+-            let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await.unwrap();
++            let app = if std::env::var("BENCH_CPU_SYNC").as_deref() == Ok("1") {
++                app.route(
++                    "/cpu-sync",
++                    get(|| async {
++                        tokio::task::spawn_blocking(cpu_response)
++                            .await
++                            .expect("checksum task failed")
++                    }),
++                )
++            } else {
++                app
++            };
++            let listener = tokio::net::TcpListener::bind((host.as_str(), port))
++                .await
++                .unwrap();
+             axum::serve(listener, app).await.unwrap();
+         });
+ }
+diff --git a/benchmarks/compare/bessemer_app.py b/benchmarks/compare/bessemer_app.py
+index 6827072..492ef9f 100644
+--- a/benchmarks/compare/bessemer_app.py
++++ b/benchmarks/compare/bessemer_app.py
+@@ -1,8 +1,13 @@
+ """Bessemer side of the head-to-head. Routes match fastapi_app.py and axum_app."""
+ 
+ import asyncio
++import os
++import sys
++import sysconfig
++from hashlib import sha256
++from pathlib import Path
+ 
+-from bessemer import App
++from bessemer import App, Response, _native
+ from pydantic import BaseModel
+ 
+ 
+@@ -19,6 +24,52 @@ class Order(BaseModel):
+ 
+ app = App()
+ app.health("/healthz")
++NATIVE_SHA256 = sha256(Path(_native.__file__).read_bytes()).hexdigest()
++
++PAYLOAD = b"x" * 262144
++LARGE_ITEMS = [
++    {"id": i, "name": f"large-{i}", "price": 1.5, "tags": ["a", "b"]}
++    for i in range(256)
++]
++
++
++def checksum(iterations: int) -> int:
++    value = 0
++    for index in range(iterations):
++        value = (value + index * index) % 1_000_003
++    return value
++
++
++@app.get("/benchmark-runtime")
++async def benchmark_runtime():
++    return {
++        "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
++        "free_threaded": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
++        "pid": os.getpid(),
++        "native_sha256": NATIVE_SHA256,
++    }
++
++
++@app.get("/cpu-inline")
++async def cpu_inline():
++    return {"checksum": checksum(50_000)}
++
++
++if os.environ.get("BENCH_CPU_SYNC") == "1":
++
++    @app.get("/cpu-sync")
++    def cpu_sync():
++        return {"checksum": checksum(50_000)}
++
++
++@app.get("/bytes")
++async def large_bytes():
++    return Response(PAYLOAD, media_type="application/octet-stream")
++
++
++@app.get("/models256", response_model=list[Item])
++async def models256():
++    return LARGE_ITEMS
+ 
+ 
+ @app.get("/json")
+diff --git a/benchmarks/compare/fastapi_app.py b/benchmarks/compare/fastapi_app.py
+index 953e4cb..22bdddc 100644
+--- a/benchmarks/compare/fastapi_app.py
++++ b/benchmarks/compare/fastapi_app.py
+@@ -1,8 +1,14 @@
+ """FastAPI side of the head-to-head. Routes match bessemer_app.py and axum_app."""
+ 
+ import asyncio
++import os
++import sys
++import sysconfig
+ 
++import httptools  # noqa: F401 - check GIL after importing Uvicorn's HTTP parser
++import uvloop  # noqa: F401 - check GIL after importing Uvicorn's loop
+ from fastapi import FastAPI
++from fastapi.responses import Response
+ from pydantic import BaseModel
+ 
+ 
+@@ -19,6 +25,50 @@ class Order(BaseModel):
+ 
+ app = FastAPI()
+ 
++PAYLOAD = b"x" * 262144
++LARGE_ITEMS = [
++    {"id": i, "name": f"large-{i}", "price": 1.5, "tags": ["a", "b"]}
++    for i in range(256)
++]
++
++
++def checksum(iterations: int) -> int:
++    value = 0
++    for index in range(iterations):
++        value = (value + index * index) % 1_000_003
++    return value
++
++
++@app.get("/benchmark-runtime")
++async def benchmark_runtime():
++    return {
++        "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
++        "free_threaded": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
++        "pid": os.getpid(),
++    }
++
++
++@app.get("/cpu-inline")
++async def cpu_inline():
++    return {"checksum": checksum(50_000)}
++
++
++if os.environ.get("BENCH_CPU_SYNC") == "1":
++
++    @app.get("/cpu-sync")
++    def cpu_sync():
++        return {"checksum": checksum(50_000)}
++
++
++@app.get("/bytes")
++async def large_bytes():
++    return Response(PAYLOAD, media_type="application/octet-stream")
++
++
++@app.get("/models256", response_model=list[Item])
++async def models256():
++    return LARGE_ITEMS
++
+ 
+ @app.get("/healthz")
+ async def healthz():
+diff --git a/benchmarks/compare/measurement.py b/benchmarks/compare/measurement.py
+index 796dacd..6c4e6f6 100644
+--- a/benchmarks/compare/measurement.py
++++ b/benchmarks/compare/measurement.py
+@@ -49,6 +49,7 @@ def oha_sample(data):
+         "elapsed_seconds": elapsed,
+         "successful_responses": successful,
+         "completed_responses": sum(codes.values()) if codes is not None else None,
++        "response_body_bytes": summary.get("totalData"),
+         "p50_ms": milliseconds("p50"),
+         "p99_ms": milliseconds("p99"),
+         "non_200": sum(count for code, count in codes.items() if code != "200")
+diff --git a/benchmarks/compare/remote/bootstrap.sh b/benchmarks/compare/remote/bootstrap.sh
+index 655b452..a5ed86b 100755
+--- a/benchmarks/compare/remote/bootstrap.sh
++++ b/benchmarks/compare/remote/bootstrap.sh
+@@ -1,52 +1,254 @@
+ #!/usr/bin/env bash
+-# Prepare a fresh Ubuntu 24.04 host for the two-machine comparison.
+-#
+-#   bootstrap.sh server   build Bessemer, the FastAPI venv and the Axum binary
+-#   bootstrap.sh client   install oha
+-#
+-# Run from the unpacked repository root. Idempotent; safe to re-run.
++# Prepare two source-built wheel environments and one native binary for RC10 comparisons.
++# Execute from the unpacked benchmark bundle on Ubuntu 24.04 x86_64.
+ set -euo pipefail
+ 
+-role=${1:?usage: bootstrap.sh server|client}
+-RUST_VERSION=${RUST_VERSION:-1.92.0}
+-OHA_VERSION=${OHA_VERSION:-1.16.0}
++role=${1:-}
++case "$role" in
++  server|client) ;;
++  -h|--help) echo "usage: bootstrap.sh server|client"; exit 0 ;;
++  *) echo "usage: bootstrap.sh server|client" >&2; exit 2 ;;
++esac
++if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
++  echo "bootstrap needs an x86_64 Linux worker" >&2
++  exit 2
++fi
++
+ BENCH_HOME=${BENCH_HOME:-$HOME/bench}
+-mkdir -p "$BENCH_HOME"
++BENCH_SHARED=${BENCH_SHARED:-$BENCH_HOME/shared}
++RUST_VERSION=${RUST_VERSION:-1.92.0}
++PYTHON_VERSION=${PYTHON_VERSION:-3.14.7}
++UV_VERSION=0.13.9
++OHA_VERSION=1.16.0
++OHA_SHA=620bb9e16fb53eabc9a3fc45f88bdb41fefa3fee5c05e75892011ce320391716
++MATURIN_VERSION=1.16.0
++MAIN_COMMIT=678e3184f6280eae287a5e19616f7747e9ef20f1
++RC10_COMMIT=687e70739416d0cca7b4c64de6d4272edf03b101
++AXUM_SOURCE=benchmarks/compare/axum_app
++
++mkdir -p "$BENCH_HOME/bin" "$BENCH_SHARED/bin"
++BENCH_HOME=$(cd "$BENCH_HOME" && pwd)
++BENCH_SHARED=$(cd "$BENCH_SHARED" && pwd)
++if [[ "$role" == server ]]; then
++  case "$PYTHON_VERSION" in
++    3.13.18|3.14.7|3.14.7t) ;;
++    *) echo "unsupported PYTHON_VERSION: $PYTHON_VERSION" >&2; exit 2 ;;
++  esac
++  if [[ "$RUST_VERSION" != 1.92.0 ]]; then
++    echo "this comparison is pinned to Rust 1.92.0" >&2
++    exit 2
++  fi
++fi
+ 
+ export DEBIAN_FRONTEND=noninteractive
+ sudo apt-get update -qq
+-sudo apt-get install -y -qq build-essential pkg-config python3 python3-venv python3-dev util-linux >/dev/null
+-
+-if ! command -v cargo >/dev/null && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+-  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION"
++packages=(ca-certificates curl python3 util-linux)
++if [[ "$role" == server ]]; then
++  packages+=(build-essential pkg-config git)
+ fi
+-export PATH="$HOME/.cargo/bin:$PATH"
++sudo apt-get install -y -qq "${packages[@]}"
+ 
+-# Steady clocks and enough sockets for high connection counts.
+-if [ -d /sys/devices/system/cpu/cpu0/cpufreq ]; then
+-  echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null || true
++# Atomic cache setup across a smoke run and monitored reruns on the same VM.
++exec 9>"$BENCH_SHARED/bootstrap.lock"
++flock 9
++
++hash_file() {
++  sha256sum -- "$1" | cut -d ' ' -f1
++}
++
++if [[ "$role" == client ]]; then
++  oha="$BENCH_SHARED/bin/oha"
++  if [[ ! -f "$oha" ]] || [[ $(hash_file "$oha") != "$OHA_SHA" ]]; then
++    curl -fsSL --retry 3 "https://github.com/hatoo/oha/releases/download/v$OHA_VERSION/oha-linux-amd64" -o "$oha.part"
++    printf '%s  %s\n' "$OHA_SHA" "$oha.part" | sha256sum -c -
++    chmod 755 "$oha.part"
++    mv "$oha.part" "$oha"
++  fi
++  ln -sfnT "$oha" "$BENCH_HOME/bin/oha"
++  "$oha" --version
++  exit 0
+ fi
+-sudo sysctl -q -w net.core.somaxconn=65535 net.ipv4.tcp_max_syn_backlog=65535 \
+-  net.ipv4.ip_local_port_range="1024 65000" net.ipv4.tcp_tw_reuse=1
+ 
+-case "$role" in
+-  server)
+-    python3 -m venv "$BENCH_HOME/venv"
+-    "$BENCH_HOME/venv/bin/pip" install -q --disable-pip-version-check \
+-      maturin==1.9.6 fastapi==0.121.3 'uvicorn[standard]==0.38.0' pydantic==2.14.2
+-    "$BENCH_HOME/venv/bin/maturin" build --release --locked --features extension-module \
+-      --interpreter "$BENCH_HOME/venv/bin/python" --out "$BENCH_HOME/wheels"
+-    "$BENCH_HOME/venv/bin/pip" install -q --force-reinstall --no-deps "$BENCH_HOME"/wheels/bessemer-*.whl
+-    (cd benchmarks/compare/axum_app && cargo build --release --locked -q)
+-    ;;
+-  client)
+-    if ! "$HOME/.cargo/bin/oha" --version 2>/dev/null | grep -q "$OHA_VERSION"; then
+-      cargo install oha --locked --version "$OHA_VERSION" -q
+-    fi
+-    ;;
+-  *)
+-    echo "unknown role $role" >&2
++verify_archive() {
++  local archive=$1 expected=$2
++  if [[ $(git get-tar-commit-id < <(gzip -dc "$archive")) != "$expected" ]]; then
++    echo "unexpected source revision in $archive" >&2
+     exit 2
+-    ;;
+-esac
+-echo "bootstrap $role done"
++  fi
++}
++
++main_archive="$PWD/bessemer-main.tar.gz"
++rc10_archive="$PWD/bessemer-rc10.tar.gz"
++verify_archive "$main_archive" "$MAIN_COMMIT"
++verify_archive "$rc10_archive" "$RC10_COMMIT"
++main_sha=$(hash_file "$main_archive")
++rc10_sha=$(hash_file "$rc10_archive")
++source_key=$(printf '%s\n' "$main_sha" "$rc10_sha" | sha256sum | cut -d ' ' -f1)
++cache="$BENCH_SHARED/builds/$PYTHON_VERSION-rust-$RUST_VERSION-maturin-$MATURIN_VERSION-$source_key"
++mkdir -p "$cache"
++
++uv="$BENCH_SHARED/bin/uv"
++if [[ ! -x "$uv" ]] || [[ $( "$uv" --version ) != "uv $UV_VERSION"* ]]; then
++  curl -fsSL --retry 3 "https://astral.sh/uv/$UV_VERSION/install.sh" |
++    UV_UNMANAGED_INSTALL="$BENCH_SHARED/bin" sh
++fi
++export UV_PYTHON_INSTALL_DIR="$BENCH_SHARED/python" UV_CACHE_DIR="$BENCH_SHARED/uv-cache"
++"$uv" --no-config python install --no-bin "$PYTHON_VERSION"
++
++export RUSTUP_HOME="$BENCH_SHARED/rustup" CARGO_HOME="$BENCH_SHARED/cargo"
++if [[ ! -x "$CARGO_HOME/bin/cargo" ]]; then
++  curl -fsSL --retry 3 https://sh.rustup.rs |
++    sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --no-modify-path
++fi
++export PATH="$CARGO_HOME/bin:$PATH" RUSTUP_TOOLCHAIN="$RUST_VERSION"
++rustc_version=$(rustc --version)
++
++if [[ ! -f "$cache/build-complete" ]]; then
++  "$uv" --no-config venv --allow-existing --managed-python --python "$PYTHON_VERSION" "$cache/tools"
++  "$uv" --no-config pip install --python "$cache/tools/bin/python" \
++    --index-url https://pypi.org/simple --only-binary :all: "maturin==$MATURIN_VERSION"
++
++  "$uv" --no-config venv --allow-existing --managed-python --python "$PYTHON_VERSION" "$cache/main/venv"
++  "$uv" --no-config pip install --python "$cache/main/venv/bin/python" \
++    --index-url https://pypi.org/simple --only-binary :all: \
++    fastapi==0.165.0 uvicorn==0.54.0 uvloop==0.23.0 httptools==0.9.0 pydantic==2.14.4 pydantic-core==2.50.5
++  "$uv" --no-config pip freeze --exclude bessemer --python "$cache/main/venv/bin/python" > "$cache/dependencies.txt"
++  "$uv" --no-config venv --allow-existing --managed-python --python "$PYTHON_VERSION" "$cache/rc10/venv"
++  "$uv" --no-config pip sync --python "$cache/rc10/venv/bin/python" \
++    --index-url https://pypi.org/simple --only-binary :all: "$cache/dependencies.txt"
++
++  for source in main rc10; do
++    archive=$main_archive
++    if [[ "$source" == rc10 ]]; then
++      archive=$rc10_archive
++    fi
++    build="$cache/$source"
++    mkdir -p "$build/source" "$build/wheels"
++    tar -xzf "$archive" -C "$build/source"
++    (
++      cd "$build/source"
++      export CARGO_TARGET_DIR="$build/target"
++      env -u PYTHON_GIL -u PYTHONPATH -u PYTHONHOME -u PYTHON_CPU_COUNT PYTHON_JIT=0 \
++        "$cache/tools/bin/maturin" build --release --locked --features extension-module \
++        --interpreter "$build/venv/bin/python" --out "$build/wheels"
++    )
++    wheels=("$build"/wheels/*.whl)
++    if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
++      echo "expected exactly one $source wheel for $PYTHON_VERSION" >&2
++      exit 1
++    fi
++    "$uv" --no-config pip install --python "$build/venv/bin/python" --no-deps --reinstall "${wheels[0]}"
++  done
++  touch "$cache/build-complete"
++fi
++
++axum_key=$(sha256sum "$AXUM_SOURCE/Cargo.toml" "$AXUM_SOURCE/Cargo.lock" "$AXUM_SOURCE/src/main.rs" | sha256sum | cut -d ' ' -f1)
++axum_target="$BENCH_SHARED/axum/rust-$RUST_VERSION-$axum_key"
++axum="$axum_target/release/axum-compare"
++if [[ ! -x "$axum" ]]; then
++  CARGO_TARGET_DIR="$axum_target" cargo build --release --locked --manifest-path "$AXUM_SOURCE/Cargo.toml"
++fi
++maturin_version=$("$cache/tools/bin/maturin" --version)
++ln -sfnT "$cache/main/venv" "$BENCH_HOME/venv"
++ln -sfnT "$cache/rc10/venv" "$BENCH_HOME/venv-rc10"
++ln -sfnT "$axum_target" "$BENCH_HOME/target"
++
++"$uv" --no-config pip freeze --python "$BENCH_HOME/venv/bin/python" > "$BENCH_HOME/python-packages.txt"
++"$uv" --no-config pip freeze --python "$BENCH_HOME/venv-rc10/bin/python" > "$BENCH_HOME/python-packages-rc10.txt"
++# Inspect each selected interpreter independently. Check the installed binary
++# against the wheel member before recording its digest.
++for source in main rc10; do
++  build="$cache/$source"
++  wheels=("$build"/wheels/*.whl)
++  commit=$MAIN_COMMIT
++  sha=$main_sha
++  if [[ "$source" == rc10 ]]; then
++    commit=$RC10_COMMIT
++    sha=$rc10_sha
++  fi
++  env -u PYTHON_GIL -u PYTHONPATH -u PYTHONHOME -u PYTHON_CPU_COUNT PYTHON_JIT=0 \
++    "$build/venv/bin/python" -I - "$PYTHON_VERSION" "${wheels[0]}" "$commit" "$sha" \
++    > "$BENCH_HOME/build-$source.json" <<'PY'
++import hashlib
++from importlib.metadata import version
++import json
++from pathlib import Path
++import sys
++import sysconfig
++from zipfile import ZipFile
++
++import bessemer
++from bessemer import _native
++import fastapi
++import httptools
++import pydantic
++import uvicorn
++import uvloop
++
++abi, wheel_path, commit, source_sha = sys.argv[1:]
++free_threaded = abi.endswith("t")
++python_version = ".".join(map(str, sys.version_info[:3]))
++assert python_version == abi.removesuffix("t")
++assert bool(sysconfig.get_config_var("Py_GIL_DISABLED")) is free_threaded
++assert sys._is_gil_enabled() is not free_threaded
++jit = getattr(sys, "_jit", None)
++assert jit is None or not jit.is_enabled()
++
++def digest(path):
++    with path.open("rb") as stream:
++        return hashlib.file_digest(stream, "sha256").hexdigest()
++
++wheel = Path(wheel_path)
++native = Path(_native.__file__)
++assert native.is_relative_to(Path(sys.prefix))
++with ZipFile(wheel) as archive:
++    assert archive.read(f"bessemer/{native.name}") == native.read_bytes()
++pins = {
++    "bessemer": "1.0.0rc10", "fastapi": "0.165.0", "uvicorn": "0.54.0",
++    "uvloop": "0.23.0", "httptools": "0.9.0", "pydantic": "2.14.4",
++    "pydantic-core": "2.50.5",
++}
++versions = {name: version(name) for name in pins}
++assert versions == pins, versions
++print(json.dumps({
++    "commit": commit,
++    "source_sha256": source_sha,
++    "wheel_sha256": digest(wheel),
++    "wheel_filename": wheel.name,
++    "native_sha256": digest(native),
++    "python_version": python_version,
++    "gil_enabled": sys._is_gil_enabled(),
++    "free_threaded": free_threaded,
++    "versions": versions,
++}, indent=2))
++PY
++done
++
++python3 - "$BENCH_HOME" "$PYTHON_VERSION" "$rustc_version" "$maturin_version" "$axum" "$AXUM_SOURCE/Cargo.lock" <<'PY'
++from hashlib import file_digest
++import json
++from pathlib import Path
++import sys
++
++home, abi, rustc, maturin, axum, lock = sys.argv[1:]
++home = Path(home)
++
++def digest(path):
++    with Path(path).open("rb") as stream:
++        return file_digest(stream, "sha256").hexdigest()
++
++roles = {role: json.loads((home / f"build-{role}.json").read_text()) for role in ("main", "rc10")}
++assert roles["main"]["versions"] == roles["rc10"]["versions"]
++assert roles["main"]["native_sha256"] != roles["rc10"]["native_sha256"]
++receipt = {
++    "python": abi,
++    "rustc": rustc,
++    "maturin": maturin,
++    "axum_sha256": digest(axum),
++    "axum_lock_sha256": digest(lock),
++    "roles": roles,
++}
++text = json.dumps(receipt, indent=2) + "\n"
++(home / "build-receipt.json").write_text(text)
++print(text, end="")
++PY
+diff --git a/benchmarks/compare/remote/gcp.sh b/benchmarks/compare/remote/gcp.sh
+index f12f8d4..4d9b1bc 100755
+--- a/benchmarks/compare/remote/gcp.sh
++++ b/benchmarks/compare/remote/gcp.sh
+@@ -1,82 +1,165 @@
+ #!/usr/bin/env bash
+-# Two-machine comparison on Google Cloud.
+-#
+-#   gcp.sh up      create the server and client VMs in one zone
+-#   gcp.sh run     bootstrap both and run the comparison (see run_two_machines.sh)
+-#   gcp.sh down    delete both VMs and the placement policy
+-#   gcp.sh all     up, run, then down even if the run fails
+-#
+-# Needs an authenticated gcloud with a default project (or PROJECT set) and
+-# the default VPC, whose default-allow-internal rule lets the VMs talk.
+-#
+-# Defaults: the server is a c3-standard-16 with SMT off (8 physical cores, so
+-# configs go up to 8-core); the client is a c3-highcpu-44 so the load
+-# generator has several times the server's cores. Both sit in one compact
+-# placement group. Roughly US$3/hour together on demand; a default run takes
+-# about 45 minutes including the build.
++# Benchmark two dedicated Google Cloud VMs over their private network.
+ set -euo pipefail
+ 
++usage() {
++  echo "usage: gcp.sh up|run|down|all [run_compare args]"
++}
++action=${1:-}
++case "$action" in
++  -h|--help) usage; exit 0 ;;
++  up|run|down|all) shift ;;
++  *) usage >&2; exit 2 ;;
++esac
++
+ ZONE=${ZONE:-europe-west2-a}
+ PROJECT=${PROJECT:-$(gcloud config get-value project 2>/dev/null)}
+-PREFIX=${PREFIX:-bessemer-bench}
+-SERVER_TYPE=${SERVER_TYPE:-c3-standard-16}
+-CLIENT_TYPE=${CLIENT_TYPE:-c3-highcpu-44}
++if [[ -z "$PROJECT" || "$PROJECT" == '(unset)' ]]; then
++  echo "set PROJECT to the Google Cloud project for this benchmark" >&2
++  exit 2
++fi
++if [[ -z ${PREFIX:-} ]]; then
++  case "$action" in
++    up|all) PREFIX="bessemer-bench-$(date -u +%Y%m%d-%H%M%S)-$(python3 -c 'import secrets; print(secrets.token_hex(3))')" ;;
++    run) PREFIX=bessemer-bench ;;
++    down) echo "set PREFIX to the prefix printed by gcp.sh up" >&2; exit 2 ;;
++  esac
++fi
++if [[ ! "$PREFIX" =~ ^[a-z][a-z0-9-]{0,50}$ ]]; then
++  echo "invalid benchmark PREFIX: $PREFIX" >&2
++  exit 2
++fi
++SERVER_TYPE=${SERVER_TYPE:-c3-standard-8}
++CLIENT_TYPE=${CLIENT_TYPE:-c3-highcpu-22}
+ SERVER_THREADS_PER_CORE=${SERVER_THREADS_PER_CORE:-1}
+-CONFIGS=${CONFIGS:-1-core,2-core,4-core,8-core}
++CONFIGS=${CONFIGS:-1-core,2-core,4-core}
+ CONNECTIONS=${CONNECTIONS:-256}
+-OUT_DIR=${OUT_DIR:-$(git rev-parse --show-toplevel)/benchmarks/results/$(date -u +%F)/compare-two-machine}
++IAP=${IAP:-1}
++case "$IAP" in
++  1) ssh_access=(--tunnel-through-iap) ;;
++  0) ssh_access=(--internal-ip) ;;
++  *) echo "IAP must be 0 or 1" >&2; exit 2 ;;
++esac
+ region=${ZONE%-*}
++repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
++OUT_DIR=${OUT_DIR:-$repo/benchmarks/results/$(date -u +%F)/gcp-$(date -u +%H%M%S)}
+ server=$PREFIX-server
+ client=$PREFIX-client
+ policy=$PREFIX-placement
++policy_owner="Bessemer benchmark $PREFIX"
++if [[ "$action" == run ]]; then
++  server=${SERVER:-$server}
++  client=${CLIENT:-$client}
++fi
+ gc() { gcloud --project "$PROJECT" "$@"; }
+ 
+-up() {
+-  if ! gc compute resource-policies describe "$policy" --region "$region" >/dev/null 2>&1; then
+-    gc compute resource-policies create group-placement "$policy" \
+-      --region "$region" --collocation collocated
++created_policy=0
++created_server=0
++created_client=0
++cleanup_created() {
++  local status=$?
++  trap - EXIT
++  if ((created_server)); then
++    gc compute instances delete "$server" --zone "$ZONE" --quiet || status=1
+   fi
++  if ((created_client)); then
++    gc compute instances delete "$client" --zone "$ZONE" --quiet || status=1
++  fi
++  if ((created_policy)); then
++    gc compute resource-policies delete "$policy" --region "$region" --quiet || status=1
++  fi
++  exit "$status"
++}
++
++wait_for_ssh() {
++  for attempt in $(seq 30); do
++    if gc compute ssh "$1" --zone "$ZONE" --quiet "${ssh_access[@]}" --command true >/dev/null 2>&1; then
++      return 0
++    fi
++    sleep 10
++  done
++  echo "SSH did not become ready for $1" >&2
++  return 1
++}
++
++up() {
++  echo "== benchmark project $PROJECT, zone $ZONE, PREFIX=$PREFIX"
++  gc compute resource-policies create group-placement "$policy" \
++    --region "$region" --collocation collocated --description "$policy_owner"
++  created_policy=1
+   common=(--zone "$ZONE" --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud
+     --boot-disk-size 50GB --boot-disk-type pd-balanced --resource-policies "$policy"
+-    --maintenance-policy TERMINATE --labels purpose=bessemer-bench)
++    --maintenance-policy TERMINATE --no-address --no-service-account --no-scopes
++    --labels "purpose=bessemer-bench,benchmark=$PREFIX")
++  if [[ -n ${SUBNET:-} ]]; then
++    common+=(--subnet "$SUBNET")
++  elif [[ -n ${NETWORK:-} ]]; then
++    common+=(--network "$NETWORK")
++  fi
+   gc compute instances create "$server" "${common[@]}" --machine-type "$SERVER_TYPE" \
+     --threads-per-core "$SERVER_THREADS_PER_CORE"
++  created_server=1
+   gc compute instances create "$client" "${common[@]}" --machine-type "$CLIENT_TYPE"
+-  echo "waiting for SSH"
+-  for host in "$server" "$client"; do
+-    for _ in $(seq 30); do
+-      gc compute ssh "$host" --zone "$ZONE" --quiet --command true >/dev/null 2>&1 && break
+-      sleep 10
+-    done
+-  done
++  created_client=1
++  wait_for_ssh "$server"
++  wait_for_ssh "$client"
+ }
+ 
+ run() {
++  local server_ip server_network client_network
+   server_ip=$(gc compute instances describe "$server" --zone "$ZONE" \
+     --format 'value(networkInterfaces[0].networkIP)')
+-  CLOUDSDK_CORE_PROJECT=$PROJECT TRANSPORT=gcloud ZONE=$ZONE \
++  server_network=$(gc compute instances describe "$server" --zone "$ZONE" \
++    --format 'value(networkInterfaces[0].network)')
++  client_network=$(gc compute instances describe "$client" --zone "$ZONE" \
++    --format 'value(networkInterfaces[0].network)')
++  if [[ -z "$server_ip" || -z "$server_network" || "$server_network" != "$client_network" ]]; then
++    echo "the benchmark VMs must have a private address on the same VPC" >&2
++    return 1
++  fi
++  CLOUDSDK_CORE_PROJECT=$PROJECT TRANSPORT=gcloud ZONE=$ZONE IAP=$IAP \
+     "$(dirname "$0")/run_two_machines.sh" "$server" "$client" "$server_ip" "$OUT_DIR" \
+     --configs "$CONFIGS" --connections "$CONNECTIONS" "$@"
+ }
+ 
+ down() {
+-  gc compute instances delete "$server" "$client" --zone "$ZONE" --quiet || true
+-  gc compute resource-policies delete "$policy" --region "$region" --quiet || true
++  local description rows name purpose benchmark
++  local owned=()
++  description=$(gc compute resource-policies describe "$policy" --region "$region" --format 'value(description)')
++  if [[ "$description" != "$policy_owner" ]]; then
++    echo "placement policy $policy has no matching benchmark owner marker" >&2
++    return 1
++  fi
++  rows=$(gc compute instances list --zones "$ZONE" --filter "name~'^$PREFIX-(server|client)$'" \
++    --format 'csv[no-heading](name,labels.purpose,labels.benchmark)')
++  while IFS=, read -r name purpose benchmark; do
++    [[ -n "$name" ]] || continue
++    if [[ "$purpose" != bessemer-bench || "$benchmark" != "$PREFIX" ]]; then
++      echo "VM $name has no matching benchmark owner labels" >&2
++      return 1
++    fi
++    owned+=("$name")
++  done <<< "$rows"
++  if [[ -n ${owned[*]:-} ]]; then
++    gc compute instances delete "${owned[@]}" --zone "$ZONE" --quiet
++  fi
++  gc compute resource-policies delete "$policy" --region "$region" --quiet
+ }
+ 
+-action=${1:-}
+-shift || true
++trap 'exit 130' INT
++trap 'exit 143' TERM
+ case "$action" in
+-  up) up ;;
++  up)
++    trap cleanup_created EXIT
++    up
++    trap - EXIT
++    echo "keep PREFIX=$PREFIX for gcp.sh run and down"
++    ;;
+   run) run "$@" ;;
+   down) down ;;
+   all)
+-    trap down EXIT
++    trap cleanup_created EXIT
+     up
+     run "$@"
+     ;;
+-  *)
+-    echo "usage: gcp.sh up|run|down|all [run_compare args]" >&2
+-    exit 2
+-    ;;
+ esac
+diff --git a/benchmarks/compare/remote/run_two_machines.sh b/benchmarks/compare/remote/run_two_machines.sh
+index 66ea4be..d360e80 100755
+--- a/benchmarks/compare/remote/run_two_machines.sh
++++ b/benchmarks/compare/remote/run_two_machines.sh
+@@ -1,82 +1,251 @@
+ #!/usr/bin/env bash
+-# Run the comparison with the servers and the load generator on separate hosts.
+-#
+-#   run_two_machines.sh SERVER CLIENT SERVER_PRIVATE_IP OUT_DIR [run_compare args]
+-#
+-# SERVER and CLIENT are SSH destinations (user@host) for two Ubuntu 24.04
+-# hosts that can reach each other on SERVER_PRIVATE_IP. The script ships the
+-# current commit to both, bootstraps them in parallel, starts server_agent.py
+-# on the server, runs run_compare.py on the client and copies the results and
+-# a Markdown summary into OUT_DIR. Extra arguments go to run_compare.py.
+-#
+-# Set TRANSPORT=gcloud (with ZONE) to use `gcloud compute ssh/scp` with
+-# instance names instead of plain ssh/scp.
++# Ship the prepared compare tree. Run on two dedicated Ubuntu 24.04 x86_64 hosts.
+ set -euo pipefail
+ 
+-server=${1:?usage: run_two_machines.sh SERVER CLIENT SERVER_PRIVATE_IP OUT_DIR [args]}
+-client=${2:?}
+-server_ip=${3:?}
+-out_dir=${4:?}
++if [[ ${1:-} == --help || ${1:-} == -h ]]; then
++  echo "usage: run_two_machines.sh SERVER CLIENT SERVER_PRIVATE_IP OUT_DIR [run_compare args]"
++  exit 0
++fi
++server=${1:?usage: run_two_machines.sh SERVER CLIENT SERVER_PRIVATE_IP OUT_DIR [run_compare args]}
++client=${2:?set CLIENT}
++server_ip=${3:?set SERVER_PRIVATE_IP}
++out_dir=${4:?set OUT_DIR}
+ shift 4
+ TRANSPORT=${TRANSPORT:-ssh}
+ AGENT_PORT=${AGENT_PORT:-9100}
++PYTHON_VERSION=${PYTHON_VERSION:-3.14.7}
++RUST_VERSION=${RUST_VERSION:-1.92.0}
+ repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+-commit=$(git -C "$repo" rev-parse --short HEAD)
+ 
+-remote() {  # remote HOST COMMAND
+-  if [ "$TRANSPORT" = gcloud ]; then
+-    gcloud compute ssh "$1" --zone "${ZONE:?set ZONE}" --quiet --command "$2"
++for host in "$server" "$client"; do
++  if [[ ! "$host" =~ ^[[:alnum:]][[:alnum:]_.@-]*$ ]]; then
++    echo "invalid SSH destination: $host" >&2
++    exit 2
++  fi
++done
++if [[ "$server" == "$client" ]]; then
++  echo "the server and client must be different hosts" >&2
++  exit 2
++fi
++if [[ ! "$AGENT_PORT" =~ ^[0-9]{1,5}$ ]] || ((10#$AGENT_PORT < 1024 || 10#$AGENT_PORT > 65535)); then
++  echo "AGENT_PORT must be between 1024 and 65535" >&2
++  exit 2
++fi
++case "$PYTHON_VERSION" in
++  3.14.7|3.14.7t) ;;
++  *) echo "unsupported PYTHON_VERSION: $PYTHON_VERSION" >&2; exit 2 ;;
++esac
++if [[ ! "$RUST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
++  echo "RUST_VERSION must be an exact x.y.z version" >&2
++  exit 2
++fi
++python3 - "$server_ip" <<'PY'
++import ipaddress
++import sys
++
++try:
++    address = ipaddress.IPv4Address(sys.argv[1])
++except ipaddress.AddressValueError as error:
++    sys.exit(str(error))
++networks = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
++if not any(address in ipaddress.IPv4Network(network) for network in networks):
++    sys.exit("Use the server's private IPv4 address on the benchmark network.")
++PY
++
++case "$TRANSPORT" in
++  gcloud)
++    gcloud_args=(--zone "${ZONE:?set ZONE}" --quiet)
++    if [[ ${IAP:-0} == 1 ]]; then
++      gcloud_args+=(--tunnel-through-iap)
++    else
++      gcloud_args+=(--internal-ip)
++    fi
++    ;;
++  ssh) ;;
++  *) echo "TRANSPORT must be ssh or gcloud" >&2; exit 2 ;;
++esac
++
++remote() {
++  if [[ "$TRANSPORT" == gcloud ]]; then
++    gcloud compute ssh "$1" "${gcloud_args[@]}" --command "$2"
+   else
+     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$1" "$2"
+   fi
+ }
+-copy() {  # copy SRC DEST (either side may be HOST:path)
+-  if [ "$TRANSPORT" = gcloud ]; then
+-    gcloud compute scp --zone "${ZONE:?set ZONE}" --quiet "$1" "$2"
++copy() {
++  if [[ "$TRANSPORT" == gcloud ]]; then
++    gcloud compute scp "${gcloud_args[@]}" "$1" "$2"
+   else
+     scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$1" "$2"
+   fi
+ }
+ 
+-if [ -n "$(git -C "$repo" status --porcelain)" ]; then
+-  echo "warning: uncommitted changes are not shipped; benchmarking $commit" >&2
++mkdir -p "$out_dir"
++# Keep each run's result and provenance together. Refuse to overwrite one.
++if [[ -e "$out_dir/source.json" || -e "$out_dir/raw.json" ]]; then
++  echo "choose a new output directory: $out_dir" >&2
++  exit 2
+ fi
+ work=$(mktemp -d)
+-trap 'rm -rf "$work"' EXIT
+-git -C "$repo" archive --format=tar.gz -o "$work/bessemer.tar.gz" HEAD
++run_id="rc10-$(date -u +%Y%m%dT%H%M%S)-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
++relative="bessemer-benchmarks/$run_id"
++root="\"\$HOME/$relative\""
++shared_root="\"\$HOME/bessemer-benchmarks/shared-678e318\""
++server_ready=0
++client_ready=0
++cleanup() {
++  local status=$?
++  trap - EXIT
++  if ((server_ready)); then
++    remote "$server" "cd $root || exit 1
++      if test -f agent.pid; then
++        pid=\$(cat agent.pid)
++        if test \"\$(readlink /proc/\$pid/cwd 2>/dev/null || true)\" = \"\$PWD/benchmarks/compare\"; then
++          kill \"\$pid\" 2>/dev/null || true
++        fi
++      fi
++      rm -f agent.token" || true
++  fi
++  if ((client_ready)); then
++    remote "$client" "rm -f $root/agent.token" || true
++  fi
++  rm -rf "$work"
++  exit "$status"
++}
++trap cleanup EXIT
++trap 'exit 130' INT
++trap 'exit 143' TERM
+ 
+-echo "== shipping $commit and bootstrapping both hosts"
+-for host in "$server" "$client"; do
+-  copy "$work/bessemer.tar.gz" "$host:bessemer.tar.gz"
+-  remote "$host" 'rm -rf ~/bessemer && mkdir ~/bessemer && tar -xzf ~/bessemer.tar.gz -C ~/bessemer'
++# Archive the live tracked compare files so prepared, uncommitted edits travel
++# with the tests. Record their hashes separately from the release git commit.
++python3 - "$repo" "$work" "$out_dir" "$run_id" <<'PY'
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++import tarfile
++
++repo, work, output = (Path(value) for value in sys.argv[1:4])
++run_id = sys.argv[4]
++
++def git(*args):
++    return subprocess.check_output(["git", "-C", repo, *args])
++
++files = git("ls-files", "-z", "--", "benchmarks/compare").decode().rstrip("\0").split("\0")
++if not files or not all((repo / name).is_file() for name in files):
++    sys.exit("Tracked comparison files are missing from the working tree.")
++manifest = {
++    "run_id": run_id,
++    "release_commit": git("rev-parse", "HEAD").decode().strip(),
++    "files": {},
++}
++with tarfile.open(work / "bundle.tar.gz", "w:gz") as bundle:
++    for name in files:
++        path = repo / name
++        manifest["files"][name] = hashlib.sha256(path.read_bytes()).hexdigest()
++        bundle.add(path, arcname=name, recursive=False)
++manifest["bundle_sha256"] = hashlib.sha256((work / "bundle.tar.gz").read_bytes()).hexdigest()
++manifest["build_sources"] = {}
++for role, commit in (
++    ("main", manifest["release_commit"]),
++    ("rc10", "687e70739416d0cca7b4c64de6d4272edf03b101"),
++):
++    source = work / f"bessemer-{role}.tar.gz"
++    with source.open("wb") as handle:
++        subprocess.run(
++            ["git", "-C", repo, "archive", "--format=tar.gz", commit],
++            stdout=handle, check=True,
++        )
++    manifest["build_sources"][role] = {
++        "commit": commit, "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest()
++    }
++with (output / "source.json").open("x") as handle:
++    json.dump(manifest, handle, indent=2)
++    handle.write("\n")
++PY
++bundle_sha=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_sha256"])' "$out_dir/source.json")
++read -r main_sha baseline_sha < <(python3 -c '
++import json, sys
++sources = json.load(open(sys.argv[1]))["build_sources"]
++print(sources["main"]["source_sha256"], sources["rc10"]["source_sha256"])
++' "$out_dir/source.json")
++(
++  umask 077
++  python3 -c 'import secrets; print(secrets.token_hex(24))' > "$work/agent.token"
++)
++
++echo "== shipping $run_id to private benchmark hosts"
++prepare_host() {
++  remote "$1" "umask 077; mkdir -p \"\$HOME/bessemer-benchmarks\" && mkdir $root"
++}
++ship() {
++  copy "$work/bundle.tar.gz" "$1:$relative/bundle.tar.gz"
++  copy "$work/agent.token" "$1:$relative/agent.token"
++  remote "$1" "cd $root && printf '%s  bundle.tar.gz\n' $bundle_sha | sha256sum -c - && tar -xzf bundle.tar.gz"
++}
++prepare_host "$server"
++server_ready=1
++prepare_host "$client"
++client_ready=1
++ship "$server"
++ship "$client"
++for variant in main rc10; do
++  copy "$work/bessemer-$variant.tar.gz" "$server:$relative/bessemer-$variant.tar.gz"
+ done
+-remote "$server" 'cd ~/bessemer && benchmarks/compare/remote/bootstrap.sh server' >"$work/server.log" 2>&1 &
+-server_pid=$!
+-remote "$client" 'cd ~/bessemer && benchmarks/compare/remote/bootstrap.sh client' >"$work/client.log" 2>&1 &
+-client_pid=$!
+-wait "$server_pid" || { tail -50 "$work/server.log"; exit 1; }
+-wait "$client_pid" || { tail -50 "$work/client.log"; exit 1; }
++remote "$server" "cd $root && printf '%s  %s\n' $main_sha bessemer-main.tar.gz $baseline_sha bessemer-rc10.tar.gz | sha256sum -c -"
+ 
+-token=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
+-echo "== starting the agent on $server_ip:$AGENT_PORT"
+-# Track the agent by PID file: `pkill -f server_agent.py` would also match the
+-# remote shell running this very command line and kill it.
+-stop_agent='[ -f ~/agent.pid ] && kill "$(cat ~/agent.pid)" 2>/dev/null; rm -f ~/agent.pid; true'
+-remote "$server" "$stop_agent; cd ~/bessemer/benchmarks/compare && \
+-  { ulimit -n 65535 2>/dev/null || true; } && exec env BENCH_AGENT_TOKEN=$token nohup ~/bench/venv/bin/python server_agent.py \
+-  --python ~/bench/venv/bin/python --axum axum_app/target/release/axum-compare \
+-  --listen $server_ip:$AGENT_PORT --bind $server_ip >~/agent.log 2>&1 </dev/null & echo \$! >~/agent.pid"
+-trap 'remote "$server" "$stop_agent" || true; rm -rf "$work"' EXIT
++remote "$server" "cd $root && BENCH_HOME=$root/bench BENCH_SHARED=$shared_root PYTHON_VERSION=$PYTHON_VERSION RUST_VERSION=$RUST_VERSION benchmarks/compare/remote/bootstrap.sh server" >"$out_dir/server-bootstrap.log" 2>&1 &
++server_pid=$!
++remote "$client" "cd $root && BENCH_HOME=$root/bench BENCH_SHARED=$shared_root benchmarks/compare/remote/bootstrap.sh client" >"$out_dir/client-bootstrap.log" 2>&1 &
++client_pid=$!
++server_status=0
++client_status=0
++wait "$server_pid" || server_status=$?
++wait "$client_pid" || client_status=$?
++if ((server_status || client_status)); then
++  tail -50 "$out_dir/server-bootstrap.log" "$out_dir/client-bootstrap.log" >&2
++  exit 1
++fi
++copy "$server:$relative/bench/python-packages.txt" "$out_dir/python-packages.txt"
++copy "$server:$relative/bench/python-packages-rc10.txt" "$out_dir/python-packages-rc10.txt"
++copy "$server:$relative/bench/build-receipt.json" "$out_dir/build-receipt.json"
++
++echo "== starting the benchmark controller on the server's private address"
++remote "$server" "set -eu
++  cd $root/benchmarks/compare
++  BENCH_AGENT_TOKEN=\$(cat ../../agent.token)
++  export BENCH_AGENT_TOKEN
++  unset PYTHON_GIL PYTHONPATH PYTHON_CPU_COUNT
++  export PYTHON_JIT=0
++  ulimit -n 65535 2>/dev/null || true
++  nohup ../../bench/venv/bin/python server_agent.py \
++    --python ../../bench/venv/bin/python --baseline-python ../../bench/venv-rc10/bin/python \
++    --build-receipt ../../bench/build-receipt.json --axum ../../bench/target/release/axum-compare \
++    --listen $server_ip:$AGENT_PORT --bind $server_ip >../../agent.log 2>&1 </dev/null &
++  printf '%s\n' \$! > ../../agent.pid"
+ 
+ extra=""
+-for arg in "$@"; do extra+=" $(printf '%q' "$arg")"; done
+-echo "== running the comparison from the client"
+-remote "$client" "cd ~/bessemer/benchmarks/compare && { ulimit -n 65535 2>/dev/null || true; } && \
+-  BENCH_AGENT_TOKEN=$token python3 run_compare.py --oha ~/.cargo/bin/oha \
+-  --agent http://$server_ip:$AGENT_PORT --out ~/results.json$extra"
++for arg in "$@"; do
++  extra+=" $(printf '%q' "$arg")"
++done
++echo "== measuring from the dedicated client"
++run_status=0
++remote "$client" "set -eu
++  cd $root/benchmarks/compare
++  BENCH_AGENT_TOKEN=\$(cat ../../agent.token)
++  export BENCH_AGENT_TOKEN
++  ulimit -n 65535 2>/dev/null || true
++  exec python3 run_compare.py --oha ../../bench/bin/oha --agent http://$server_ip:$AGENT_PORT \
++    --out ../../results.json --frameworks bessemer-auto,bessemer-rc10,fastapi-standard,axum \
++    --routes json,items,echo --check-bodies$extra" | tee "$out_dir/client-run.log" || run_status=$?
+ 
+-mkdir -p "$out_dir"
+-copy "$client:results.json" "$out_dir/raw.json"
+-python3 "$repo/benchmarks/compare/summarise.py" "$out_dir/raw.json" >"$out_dir/summary.md"
+-echo "== results in $out_dir (commit $commit)"
++copy "$server:$relative/agent.log" "$out_dir/agent.log" || true
++if ! copy "$client:$relative/results.json" "$out_dir/raw.json"; then
++  echo "no result copied; the client run directory is $relative" >&2
++  exit 1
++fi
++python3 "$repo/benchmarks/compare/summarise.py" "$out_dir/raw.json" > "$out_dir/summary.md"
++echo "== results in $out_dir ($run_id)"
+ cat "$out_dir/summary.md"
++exit "$run_status"
+diff --git a/benchmarks/compare/run_compare.py b/benchmarks/compare/run_compare.py
+index 079cd16..73c91d9 100644
+--- a/benchmarks/compare/run_compare.py
++++ b/benchmarks/compare/run_compare.py
+@@ -24,6 +24,8 @@ sample as client-bound when the load generator was the likely ceiling.
+ from __future__ import annotations
+ 
+ import argparse
++import hashlib
++import http.client
+ import json
+ import os
+ import subprocess
+@@ -46,20 +48,45 @@ from servers import (
+     utilisation,
+ )
+ 
+-ECHO = json.dumps(
+-    {
++
++def order(count):
++    return {
+         "items": [
+             {"id": i, "name": f"item-{i}", "price": i * 1.25, "tags": ["a", "b"]}
+-            for i in range(20)
++            for i in range(count)
+         ]
+     }
+-).encode()
++
++
++ECHO = json.dumps(order(20)).encode()
++LARGE_ECHO = json.dumps(order(1000)).encode()
++LARGE_BYTES = b"x" * 262144
++MODELS = [
++    {"id": i, "name": f"large-{i}", "price": 1.5, "tags": ["a", "b"]}
++    for i in range(256)
++]
+ ROUTES = {
+     "json": ("GET", "/json", None),
+     "items": ("GET", "/items/7?q=abc", None),
+     "echo": ("POST", "/echo", ECHO),
++    "cpu-inline": ("GET", "/cpu-inline", None),
++    "cpu-sync": ("GET", "/cpu-sync", None),
++    "large-echo": ("POST", "/echo", LARGE_ECHO),
++    "bytes": ("GET", "/bytes", None),
++    "models256": ("GET", "/models256", None),
+     "io": ("GET", "/io", None),
+ }
++EXPECTED = {
++    "json": {"ok": True, "count": 42},
++    "items": {"id": 7, "q": "abc"},
++    "echo": json.loads(ECHO),
++    "cpu-inline": {"checksum": 679127},
++    "cpu-sync": {"checksum": 679127},
++    "large-echo": json.loads(LARGE_ECHO),
++    "bytes": LARGE_BYTES,
++    "models256": MODELS,
++    "io": {"ok": True},
++}
+ # A sample is client-bound when the load generator's CPUs were this busy.
+ CLIENT_BOUND = 0.85
+ 
+@@ -75,7 +102,7 @@ class LocalServers:
+     def info(self) -> dict:
+         return host_info()
+ 
+-    def start(self, framework: str, config: str) -> tuple[str, int]:
++    def start(self, framework: str, config: str, *, cpu_sync=False) -> tuple[str, int]:
+         cpus, workers = parse_config(config)
+         self.server = Server(
+             framework,
+@@ -84,6 +111,7 @@ class LocalServers:
+             host="127.0.0.1",
+             cpus=cpus,
+             workers=workers,
++            cpu_sync=cpu_sync,
+         )
+         self.cpus = cpu_list(cpus)
+         try:
+@@ -140,8 +168,12 @@ class RemoteServers:
+                     raise RuntimeError(f"agent at {self.base} not reachable") from error
+                 time.sleep(1)
+ 
+-    def start(self, framework: str, config: str) -> tuple[str, int]:
+-        reply = self.call("POST", "/start", {"framework": framework, "config": config})
++    def start(self, framework: str, config: str, *, cpu_sync=False) -> tuple[str, int]:
++        reply = self.call(
++            "POST",
++            "/start",
++            {"framework": framework, "config": config, "cpu_sync": cpu_sync},
++        )
+         return self.target, reply["port"]
+ 
+     def cpu(self) -> tuple[int, int]:
+@@ -152,6 +184,62 @@ class RemoteServers:
+         self.call("POST", "/stop", {})
+ 
+ 
++def probe_body(host, port, route):
++    """Check a complete fixture response outside the measured interval."""
++    method, path, body = ROUTES[route]
++    url = f"http://{host}:{port}{path}"
++    headers = {"accept-encoding": "identity"}
++    if body is not None:
++        headers["content-type"] = "application/json"
++    request = urllib.request.Request(url, data=body, method=method, headers=headers)
++    try:
++        with DIRECT.open(request, timeout=5) as response:
++            if response.status != 200 or response.geturl() != url:
++                raise RuntimeError(f"{route} probe did not return direct HTTP 200")
++            payload = response.read()
++        expected = EXPECTED[route]
++        actual = payload if isinstance(expected, bytes) else json.loads(payload)
++    except (OSError, http.client.HTTPException, ValueError) as error:
++        raise RuntimeError(f"{route} response probe failed: {error}") from error
++    # Ignore key order but retain JSON types, including bool versus number.
++    if isinstance(expected, bytes):
++        matches = actual == expected
++    else:
++        matches = json.dumps(actual, sort_keys=True) == json.dumps(
++            expected, sort_keys=True
++        )
++    if not matches:
++        raise RuntimeError(f"{route} response body differs from the fixture")
++    return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
++
++
++def probe_runtime(host, port, expected, native_sha256=None):
++    with DIRECT.open(f"http://{host}:{port}/benchmark-runtime", timeout=5) as response:
++        runtime = json.load(response)
++    for name in ("gil_enabled", "free_threaded"):
++        if type(runtime.get(name)) is not bool or runtime[name] != expected[name]:
++            raise RuntimeError(f"Unexpected worker {name}: {runtime.get(name)!r}")
++    if type(runtime.get("pid")) is not int or runtime["pid"] < 1:
++        raise RuntimeError("Expected a worker PID")
++    if native_sha256 and runtime.get("native_sha256") != native_sha256:
++        raise RuntimeError("Unexpected Bessemer native artifact in the live worker")
++    return runtime
++
++
++def body_size_reason(sample, bytes_per_reply):
++    """Check oha's aggregate body size only when its responses were all HTTP 200."""
++    successful = sample["successful_responses"]
++    if not successful or sample["non_200"] != 0 or sample["errors"] != 0:
++        return None
++    actual = sample.get("response_body_bytes")
++    if type(actual) is not int or actual < 0:
++        return "response body byte count unavailable"
++    expected = successful * bytes_per_reply
++    if actual != expected:
++        return f"response body byte count mismatch ({actual} received, {expected} expected)"
++    return None
++
++
+ def oha(args, host, port, route, duration, client_cpus):
+     method, path, body = ROUTES[route]
+     # oha defaults to one worker per physical core. Give it one per logical
+@@ -165,8 +253,9 @@ def oha(args, host, port, route, duration, client_cpus):
+         "-z",
+         f"{duration}s",
+         "-c",
+-        str(args.connections),
++        str(getattr(args, "route_connections", {}).get(route, args.connections)),
+         "--no-tui",
++        "--disable-compression",
+         "--wait-ongoing-requests-after-deadline",
+         "-t",
+         "2s",
+@@ -177,7 +266,9 @@ def oha(args, host, port, route, duration, client_cpus):
+         "-m",
+         method,
+     ]
+-    if body is not None:
++    if route == "large-echo":
++        cmd += ["-H", "content-type: application/json", "-D", str(args.large_body)]
++    elif body is not None:
+         cmd += ["-H", "content-type: application/json", "-d", body.decode()]
+     cmd.append(f"http://{host}:{port}{path}")
+     output = subprocess.run(
+@@ -201,6 +292,11 @@ def main():
+     parser.add_argument("--duration", type=int, default=10)
+     parser.add_argument("--warmup", type=int, default=3)
+     parser.add_argument("--connections", type=int, default=64)
++    parser.add_argument(
++        "--route-connections",
++        default="",
++        help="override concurrency for particular routes, e.g. cpu-inline=16,bytes=16",
++    )
+     parser.add_argument(
+         "--client-cpus",
+         help="pin oha to these CPUs (default: on one host CPU 3, or 2-3 for "
+@@ -209,7 +305,21 @@ def main():
+     parser.add_argument("--configs", default="1-core,3-core,2-core")
+     parser.add_argument("--frameworks", default="bessemer,fastapi,axum")
+     parser.add_argument("--routes", default=",".join(ROUTES))
++    parser.add_argument(
++        "--check-bodies",
++        action="store_true",
++        help="check JSON before and after load and body byte totals in clean samples",
++    )
+     args = parser.parse_args()
++    route_connections = {}
++    for entry in filter(None, args.route_connections.split(",")):
++        name, sep, count = entry.partition("=")
++        if not sep or name not in ROUTES or not count.isdecimal() or int(count) < 1:
++            parser.error(f"invalid route connection override: {entry}")
++        if name in route_connections:
++            parser.error(f"duplicate route connection override: {name}")
++        route_connections[name] = int(count)
++    args.route_connections = route_connections
+     if (
+         args.rounds <= 0
+         or args.duration <= 0
+@@ -230,15 +340,24 @@ def main():
+                 "duration",
+                 "warmup",
+                 "connections",
++                "route_connections",
+                 "client_cpus",
+                 "configs",
+                 "frameworks",
+                 "routes",
++                "check_bodies",
+             )
+         },
+     }
+     samples = []
+     out = Path(args.out)
++    if "large-echo" in args.routes.split(","):
++        args.large_body = out.with_name(out.name + ".large-echo").resolve()
++        args.large_body.write_bytes(LARGE_ECHO)
++        meta["settings"]["large_echo_input"] = {
++            "bytes": len(LARGE_ECHO),
++            "sha256": hashlib.sha256(LARGE_ECHO).hexdigest(),
++        }
+     # Clear old samples before environment, executable or remote metadata reads.
+     out.write_text(json.dumps({"meta": meta, "samples": samples}, indent=1))
+     if args.agent:
+@@ -253,10 +372,26 @@ def main():
+     for config in args.configs.split(","):
+         parse_config(config)
+     routes = args.routes.split(",")
++    frameworks = args.frameworks.split(",")
+ 
+     meta.update(
+         client=host_info() | {"oha": oha_version(args.oha)}, server=servers.info()
+     )
++    expected_runtime = (
++        meta["server"]
++        if mode == "two-machine" and "gil_enabled" in meta["server"]
++        else None
++    )
++    native_artifacts = meta["server"].get("native_artifacts", {})
++    if (
++        mode == "two-machine"
++        and "bessemer-rc10" in frameworks
++        and set(native_artifacts) != {"bessemer-auto", "bessemer-rc10"}
++    ):
++        raise RuntimeError("Missing native artifact hashes for the two Bessemer builds")
++    route_groups = [(False, [r for r in routes if r != "cpu-sync"])]
++    if "cpu-sync" in routes:
++        route_groups.append((True, ["cpu-sync"]))
+     print(json.dumps({"meta": meta}), flush=True)
+     out.write_text(json.dumps({"meta": meta, "samples": samples}, indent=1))
+     for config in args.configs.split(","):
+@@ -267,48 +402,99 @@ def main():
+             client_spec = "2-3" if config == "2-core" else "3"
+         client_cpus = cpu_list(client_spec) if client_spec else None
+         for round_index in range(args.rounds):
+-            for framework in args.frameworks.split(","):
+-                host, port = servers.start(framework, config)
+-                try:
+-                    for route in routes:
+-                        warmup = (
+-                            oha(args, host, port, route, args.warmup, client_spec)
+-                            if args.warmup
+-                            else {"skipped": True}
+-                        )
+-                        client_before = cpu_times(client_cpus)
+-                        server_before = servers.cpu()
+-                        sample = oha(
+-                            args, host, port, route, args.duration, client_spec
+-                        )
+-                        server_cpu = utilisation(server_before, servers.cpu())
+-                        client_cpu = utilisation(client_before, cpu_times(client_cpus))
+-                        sample |= {
+-                            "config": config,
+-                            "round": round_index,
+-                            "framework": framework,
+-                            "route": route,
+-                            "client_cpu": round(client_cpu, 3)
+-                            if client_cpu is not None
+-                            else None,
+-                            "server_cpu": round(server_cpu, 3)
+-                            if server_cpu is not None
+-                            else None,
+-                            "client_bound": client_cpu >= CLIENT_BOUND
+-                            if client_cpu is not None
+-                            else None,
+-                            "warmup": warmup,
+-                        }
+-                        sample["eligibility_reasons"] = eligibility_reasons(sample)
+-                        sample["eligible"] = not sample["eligibility_reasons"]
+-                        samples.append(sample)
+-                        print(json.dumps(sample), flush=True)
+-                        # Write as we go so a long cloud run keeps partial data.
+-                        out.write_text(
+-                            json.dumps({"meta": meta, "samples": samples}, indent=1)
+-                        )
+-                finally:
+-                    servers.stop()
++            offset = round_index % len(frameworks)
++            for framework in frameworks[offset:] + frameworks[:offset]:
++                for cpu_sync, group in route_groups:
++                    if not group:
++                        continue
++                    host, port = servers.start(framework, config, cpu_sync=cpu_sync)
++                    check_runtime = expected_runtime is not None and framework != "axum"
++                    native_sha256 = native_artifacts.get(framework)
++                    try:
++                        for route in group:
++                            runtime_before = (
++                                probe_runtime(
++                                    host, port, expected_runtime, native_sha256
++                                )
++                                if check_runtime
++                                else None
++                            )
++                            before_body = (
++                                probe_body(host, port, route)
++                                if args.check_bodies
++                                else None
++                            )
++                            warmup = (
++                                oha(args, host, port, route, args.warmup, client_spec)
++                                if args.warmup
++                                else {"skipped": True}
++                            )
++                            client_before = cpu_times(client_cpus)
++                            server_before = servers.cpu()
++                            sample = oha(
++                                args, host, port, route, args.duration, client_spec
++                            )
++                            server_cpu = utilisation(server_before, servers.cpu())
++                            client_cpu = utilisation(
++                                client_before, cpu_times(client_cpus)
++                            )
++                            sample |= {
++                                "config": config,
++                                "round": round_index,
++                                "framework": framework,
++                                "route": route,
++                                "connections": args.route_connections.get(
++                                    route, args.connections
++                                ),
++                                "client_cpu": round(client_cpu, 3)
++                                if client_cpu is not None
++                                else None,
++                                "server_cpu": round(server_cpu, 3)
++                                if server_cpu is not None
++                                else None,
++                                "client_bound": client_cpu >= CLIENT_BOUND
++                                if client_cpu is not None
++                                else None,
++                                "warmup": warmup,
++                            }
++                            if check_runtime:
++                                sample["runtime_before"] = runtime_before
++                                sample["runtime_after"] = probe_runtime(
++                                    host, port, expected_runtime, native_sha256
++                                )
++                            if before_body is not None:
++                                sample["body_before"] = before_body
++                                reasons = []
++                                try:
++                                    after_body = probe_body(host, port, route)
++                                    sample["body_after"] = after_body
++                                    if after_body != before_body:
++                                        reasons.append(
++                                            "response body changed during load"
++                                        )
++                                except RuntimeError as error:
++                                    reasons.append(str(error))
++                                if args.warmup and (
++                                    reason := body_size_reason(
++                                        warmup, before_body["bytes"]
++                                    )
++                                ):
++                                    reasons.append("warmup " + reason)
++                                if reason := body_size_reason(
++                                    sample, before_body["bytes"]
++                                ):
++                                    reasons.append(reason)
++                                sample["eligibility_reasons"] = reasons
++                            sample["eligibility_reasons"] = eligibility_reasons(sample)
++                            sample["eligible"] = not sample["eligibility_reasons"]
++                            samples.append(sample)
++                            print(json.dumps(sample), flush=True)
++                            # Write as we go so a long cloud run keeps partial data.
++                            out.write_text(
++                                json.dumps({"meta": meta, "samples": samples}, indent=1)
++                            )
++                    finally:
++                        servers.stop()
+     out.write_text(json.dumps({"meta": meta, "samples": samples}, indent=1))
+ 
+ 
+diff --git a/benchmarks/compare/server_agent.py b/benchmarks/compare/server_agent.py
+index fa91c45..a602b98 100644
+--- a/benchmarks/compare/server_agent.py
++++ b/benchmarks/compare/server_agent.py
+@@ -2,7 +2,7 @@
+ 
+ Runs on the server host and starts one framework at a time when the client
+ asks, so the load generator can run on separate hardware. It only launches
+-the three fixed comparison servers, and every request must carry the shared
++the fixed comparison servers, and every request must carry the shared
+ token. Bind it to a private address; it is not meant for the open internet.
+ 
+     BENCH_AGENT_TOKEN=... python server_agent.py --python VENV/bin/python \
+@@ -24,7 +24,9 @@ import os
+ import signal
+ import subprocess
+ import sys
++import sysconfig
+ from http.server import BaseHTTPRequestHandler, HTTPServer
++from pathlib import Path
+ 
+ from servers import (
+     FRAMEWORKS,
+@@ -64,11 +66,32 @@ class Agent:
+         self.args = args
+         self.server: Server | None = None
+         self.cpus: list[int] | None = None
+-        self.info = host_info() | {"versions": versions(args.python)}
++        self.info = host_info() | {
++            "versions": versions(args.python),
++            "gil_enabled": sys._is_gil_enabled(),
++            "free_threaded": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
++        }
++        self.baseline_python = getattr(args, "baseline_python", None)
++        if self.baseline_python:
++            self.info["baseline_versions"] = versions(self.baseline_python)
++        build_receipt = getattr(args, "build_receipt", None)
++        if build_receipt:
++            roles = json.loads(build_receipt.read_text())["roles"]
++            self.info["native_artifacts"] = {
++                "bessemer-auto": roles["main"]["native_sha256"],
++                "bessemer-rc10": roles["rc10"]["native_sha256"],
++            }
+ 
+-    def start(self, framework: str, config: str) -> dict:
++    def start(self, framework: str, config: str, cpu_sync: bool = False) -> dict:
+         if framework not in FRAMEWORKS:
+             raise ValueError(f"unknown framework {framework!r}")
++        if type(cpu_sync) is not bool:
++            raise ValueError("cpu_sync must be a boolean")
++        python = self.args.python
++        if framework == "bessemer-rc10":
++            if not self.baseline_python:
++                raise ValueError("RC10 role requires a baseline Python environment")
++            python = self.baseline_python
+         cpus, workers = parse_config(config)
+         wanted = cpu_list(cpus)
+         if max(wanted) >= (os.cpu_count() or 1):
+@@ -76,11 +99,12 @@ class Agent:
+         self.stop()
+         self.server = Server(
+             framework,
+-            python=self.args.python,
++            python=python,
+             axum=self.args.axum,
+             host=self.args.bind,
+             cpus=cpus,
+             workers=workers,
++            cpu_sync=cpu_sync,
+         )
+         self.cpus = wanted
+         try:
+@@ -139,7 +163,14 @@ def handler_for(agent: Agent, token: str):
+             try:
+                 body = json.loads(self.rfile.read(length) or b"{}")
+                 if self.path == "/start":
+-                    self.reply(200, agent.start(body["framework"], body["config"]))
++                    self.reply(
++                        200,
++                        agent.start(
++                            body["framework"],
++                            body["config"],
++                            body.get("cpu_sync", False),
++                        ),
++                    )
+                 elif self.path == "/stop":
+                     self.reply(200, agent.stop())
+                 else:
+@@ -153,6 +184,8 @@ def handler_for(agent: Agent, token: str):
+ def main():
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--python", required=True, help="venv with the apps installed")
++    parser.add_argument("--baseline-python", help="venv with RC10 installed")
++    parser.add_argument("--build-receipt", type=Path)
+     parser.add_argument("--axum", required=True, help="axum-compare release binary")
+     parser.add_argument("--listen", default="0.0.0.0:9100", help="agent address")
+     parser.add_argument("--bind", default="0.0.0.0", help="address servers bind to")
+@@ -161,6 +194,8 @@ def main():
+     if len(token) < 16:
+         sys.exit("set BENCH_AGENT_TOKEN to a random value of at least 16 characters")
+     args.python = resolve_executable(args.python)
++    if args.baseline_python:
++        args.baseline_python = resolve_executable(args.baseline_python)
+     args.axum = resolve_executable(args.axum)
+     host, _, port = args.listen.rpartition(":")
+     agent = Agent(args)
+diff --git a/benchmarks/compare/servers.py b/benchmarks/compare/servers.py
+index 3be4235..14b733b 100644
+--- a/benchmarks/compare/servers.py
++++ b/benchmarks/compare/servers.py
+@@ -19,7 +19,9 @@ from pathlib import Path
+ HERE = Path(__file__).resolve().parent
+ # Bessemer variants: name -> extra environment for the server.
+ BESSEMER_VARIANTS = {
+-    # Named explicitly: the default, "auto", is the Rust loop on Linux and macOS.
++    "bessemer-auto": {},
++    "bessemer-rc10": {},
++    # Keep the historical asyncio and fixed-admission comparators.
+     "bessemer": {"BESSEMER_EVENT_LOOP": "asyncio"},
+     "bessemer-rust": {"BESSEMER_EVENT_LOOP": "bessemer"},
+     "bessemer-uring": {
+@@ -27,7 +29,8 @@ BESSEMER_VARIANTS = {
+         "BESSEMER_IO_BACKEND": "io_uring",
+     },
+ }
+-FRAMEWORKS = (*BESSEMER_VARIANTS, "fastapi", "axum")
++STOCK_BESSEMER = ("bessemer-auto", "bessemer-rc10")
++FRAMEWORKS = (*BESSEMER_VARIANTS, "fastapi", "fastapi-standard", "axum")
+ # Never route a readiness probe through an environment proxy.
+ DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+ 
+@@ -57,7 +60,7 @@ def free_port(host: str) -> int:
+ 
+ def command(framework, python, axum, host, port, workers):
+     if framework in BESSEMER_VARIANTS:
+-        return [
++        args = [
+             python,
+             "-m",
+             "bessemer",
+@@ -69,16 +72,12 @@ def command(framework, python, axum, host, port, workers):
+             str(port),
+             "--workers",
+             str(workers),
+-            # The defaults (128 in flight, 1024 connections per worker) would
+-            # answer 503 at high client concurrency, and the other two
+-            # servers have no such admission limit.
+-            "--max-in-flight",
+-            "16384",
+-            "--max-connections",
+-            "16384",
+         ]
+-    if framework == "fastapi":
+-        return [
++        if framework not in STOCK_BESSEMER:
++            args += ["--max-in-flight", "16384", "--max-connections", "16384"]
++        return args
++    if framework in ("fastapi", "fastapi-standard"):
++        args = [
+             python,
+             "-m",
+             "uvicorn",
+@@ -93,6 +92,9 @@ def command(framework, python, axum, host, port, workers):
+             "warning",
+             "--no-access-log",
+         ]
++        if framework == "fastapi-standard":
++            args += ["--loop", "uvloop", "--http", "httptools"]
++        return args
+     if framework == "axum":
+         return [axum, str(port), str(workers), host]
+     raise ValueError(f"unknown framework {framework!r}")
+@@ -110,10 +112,18 @@ def resolve_executable(value: str) -> str:
+ class Server:
+     """One framework process group, pinned to its CPUs."""
+ 
+-    def __init__(self, framework, *, python, axum, host, cpus, workers):
++    def __init__(self, framework, *, python, axum, host, cpus, workers, cpu_sync=False):
+         probe = "127.0.0.1" if host in ("0.0.0.0", "") else host
+         self.port = free_port(probe)
+         self.probe = probe
++        env = os.environ | BESSEMER_VARIANTS.get(framework, {})
++        if framework in STOCK_BESSEMER:
++            env = {
++                key: value
++                for key, value in env.items()
++                if not key.startswith("BESSEMER_")
++            }
++        env["BENCH_CPU_SYNC"] = "1" if cpu_sync else "0"
+         self.process = subprocess.Popen(
+             [
+                 "taskset",
+@@ -122,7 +132,7 @@ class Server:
+                 *command(framework, python, axum, host, self.port, workers),
+             ],
+             cwd=HERE,
+-            env=os.environ | BESSEMER_VARIANTS.get(framework, {}),
++            env=env,
+             stdout=subprocess.DEVNULL,
+             stderr=subprocess.DEVNULL,
+             start_new_session=True,
+diff --git a/benchmarks/compare/summarise.py b/benchmarks/compare/summarise.py
+index bed775b..75008b2 100644
+--- a/benchmarks/compare/summarise.py
++++ b/benchmarks/compare/summarise.py
+@@ -18,9 +18,11 @@ from measurement import eligibility_reasons, finite
+ 
+ NAMES = {
+     "bessemer": "Bessemer",
++    "bessemer-auto": "Bessemer (release defaults)",
+     "bessemer-rust": "Bessemer (Rust loop)",
+     "bessemer-uring": "Bessemer (io_uring)",
+     "fastapi": "FastAPI",
++    "fastapi-standard": "FastAPI (uvloop, httptools)",
+     "axum": "Axum",
+ }
+ 
+@@ -115,7 +117,9 @@ def tables(meta: dict, samples: list[dict]) -> str:
+             if sample[key] not in seen:
+                 seen.append(sample[key])
+     frameworks = order["framework"]
++    variants = [name for name in frameworks if name.startswith("bessemer")]
+     others = [name for name in frameworks if not name.startswith("bessemer")]
++    comparisons = [(variant, other) for variant in variants for other in others]
+     lines = []
+     if meta:
+         client, server = meta.get("client", {}), meta.get("server", {})
+@@ -131,7 +135,10 @@ def tables(meta: dict, samples: list[dict]) -> str:
+     withheld = []
+     for config in order["config"]:
+         header = ["Route", *(NAMES.get(name, name) for name in frameworks)]
+-        header += [f"Bessemer / {NAMES.get(name, name)}" for name in others]
++        header += [
++            f"{NAMES.get(variant, variant)} / {NAMES.get(other, other)}"
++            for variant, other in comparisons
++        ]
+         header += ["Client CPU", "Server CPU"]
+         lines += [f"## {config}", "", "| " + " | ".join(header) + " |"]
+         lines.append("| --- |" + " ---: |" * (len(header) - 1))
+@@ -150,12 +157,15 @@ def tables(meta: dict, samples: list[dict]) -> str:
+                     values += [
+                         sample[key] for sample in group if finite(sample.get(key))
+                     ]
+-            for name in others:
++            for variant, other in comparisons:
++                if route == "io" and other == "axum":
++                    row.append("timer differs")
++                    continue
+                 ratio, reasons = paired_ratios(
+                     meta,
+-                    groups.get((config, name, route), []),
++                    groups.get((config, other, route), []),
+                     meta,
+-                    groups.get((config, "bessemer", route), []),
++                    groups.get((config, variant, route), []),
+                 )
+                 row.append(
+                     (f"{ratio:.1f}x" if ratio >= 1 else f"{ratio:.0%}")
+@@ -164,7 +174,8 @@ def tables(meta: dict, samples: list[dict]) -> str:
+                 )
+                 if reasons:
+                     withheld.append(
+-                        f"{config}, Bessemer / {name}, /{route}: {'; '.join(reasons)}"
++                        f"{config}, {NAMES.get(variant, variant)} / {other}, /{route}: "
++                        f"{'; '.join(reasons)}"
+                     )
+             row += [
+                 f"{statistics.median(values):.0%}" if values else "—"
