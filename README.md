@@ -1,5 +1,7 @@
 # Bessemer
 
+![Bessemer: Rust HTTP runtime with a Python API](docs/assets/bessemer-readme-banner.png)
+
 Bessemer is a Rust HTTP runtime with a Python application API. This checkout
 contains the application runtime, process supervisor and the original M0 performance spike.
 The 1.0 line freezes the public API. Wheels are published for Linux x86_64
